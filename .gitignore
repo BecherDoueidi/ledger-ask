@@ -17,8 +17,9 @@ __pycache__/
 # Test artifacts
 .pytest_cache/
 
-# Claude Code local settings (machine-specific permission grants)
+# Claude Code local settings/runtime state (machine-specific)
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # OS Generated
 .DS_Store

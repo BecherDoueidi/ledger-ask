@@ -6,12 +6,23 @@ and do. Two kinds of restriction, both enforced server-side (never trust
 the LLM to "behave" -- it only ever sees what we choose to show it, and
 everything it outputs is re-checked before it touches the database):
 
-1. allowed_tables / row_filter_column: control DATA access, exactly as
-   before. None = no restriction (sees/can query every table). If
-   row_filter_column is set, every allowed table gets an automatic
-   "WHERE <row_filter_column> = <donor_id>" wrapped around it before
-   execution, so a donor only ever sees rows belonging to them -- even
-   if the LLM "forgets" to add that condition itself.
+1. allowed_tables / row_filter_column: control DATA access.
+   - row_filter_column is None, allowed_tables is None: fully
+     unrestricted (viewer/analyst/admin).
+   - row_filter_column is set: allowed_tables is NOT read from this
+     config at all -- app.py computes it fresh, on every request, via
+     schema_harvester.discover_row_scoped_tables(row_filter_column):
+     every live table that currently has a column with that name. This
+     is what lets the donor role survive a database swap without
+     anyone hand-updating a table list here -- rename "Donations" to
+     "Contributions" and it's still discovered, as long as it still
+     carries a DonorId column. Every discovered table gets an automatic
+     "WHERE <row_filter_column> = <donor_id>" wrapped around it before
+     execution, so a donor only ever sees rows belonging to them -- even
+     if the LLM "forgets" to add that condition itself. (The
+     "allowed_tables" key is still present below, set to None, purely
+     so get_role()'s return shape is uniform across every role --
+     nothing ever reads it directly for a row-filtered role.)
 
 2. can_* capability flags: control APP access -- which admin-side pages
    and actions a logged-in staff member can reach. These were split out
@@ -68,12 +79,21 @@ ROLES = {
     },
     "donor": {
         "label": "Donor (self-service)",
-        # Only these tables exist as far as the LLM/SQL is concerned.
-        "allowed_tables": ["Donors", "Donations", "Sponsorships", "EventDonations"],
-        # Every one of the tables above has a DonorId column linking it
-        # back to a specific donor -- that's what we filter on.
+        # Not read directly -- see the module docstring. app.py computes
+        # the real table list on every request via
+        # schema_harvester.discover_row_scoped_tables("DonorId").
+        "allowed_tables": None,
         "row_filter_column": "DonorId",
         "requires_donor_id": True,
+        # The table used to validate a donor_id actually exists when an
+        # admin creates a new donor account (see app.py's
+        # create_user_route). Unlike allowed_tables, this genuinely can't
+        # be derived automatically -- nothing in a schema says "this is
+        # the canonical identity table" when multiple tables share a
+        # DonorId column -- so it's the one piece of donor-specific
+        # knowledge that still needs updating by hand if the identity
+        # table is renamed.
+        "identity_table": "Donors",
         "can_view_admin_panel": False,
         "can_manage_users": False,
         "can_promote_to_catalog": False,
@@ -95,6 +115,32 @@ def has_capability(role_name, capability):
     """
     role = ROLES.get(role_name)
     return bool(role and role.get(capability))
+
+
+def resolve_allowed_tables(role_name):
+    """
+    The table list app.py should actually enforce for this role, right
+    now, against whatever database is currently connected. For an
+    unrestricted role this is just the static config value (None). For
+    a row-filtered role (row_filter_column set) it's computed fresh via
+    schema_harvester.discover_row_scoped_tables -- see the module
+    docstring for why. Centralized here (rather than inlined in app.py)
+    so every call site gets the same rule and there's exactly one place
+    that knows "row-filtered roles don't read allowed_tables from
+    config." Returns None (unrestricted) if role_name doesn't exist;
+    callers that need to distinguish "no such role" should check
+    get_role() first.
+    """
+    role = ROLES.get(role_name)
+    if role is None:
+        return None
+    if role["row_filter_column"] is None:
+        return role["allowed_tables"]
+    # Imported here, not at module level, purely to avoid paying for a
+    # SQLAlchemy import (schema_harvester -> db_config -> sqlalchemy) in
+    # code paths that never touch a row-filtered role.
+    import schema_harvester
+    return schema_harvester.discover_row_scoped_tables(role["row_filter_column"])
 
 
 def is_row_restricted(role_name):

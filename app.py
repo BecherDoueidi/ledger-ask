@@ -5,7 +5,7 @@ import sqlite3
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, redirect, url_for, session
 # The ghost import is gone. We only import the correct, live harvester.
-from schema_harvester import extract_live_metadata
+from schema_harvester import extract_live_metadata, compute_schema_fingerprint
 from openai import OpenAI
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -314,7 +314,7 @@ def violates_security_matrix(query):
     return False
 
 
-def build_system_prompt(db_dialect, live_schema, allowed_tables, donor_id, followup_context=None):
+def build_system_prompt(db_dialect, live_schema, allowed_tables, donor_id, row_filter_column=None, followup_context=None):
     """
     Builds the text-to-SQL system prompt: dialect rules, few-shot syntax
     anchors, the role-scoping addendum, and the live schema. Shared by
@@ -370,11 +370,11 @@ Correct Response: SELECT t1.CompanyName, SUM(t2.DonationAmount) AS TotalContribu
         role_context = f"""
 ROLE RESTRICTION NOTICE: Your SQL will be executed inside a pre-filtered subquery.
 Each table reference is automatically rewritten to:
-  FROM (SELECT * FROM <table> WHERE DonorId = {donor_id}) AS <table>
+  FROM (SELECT * FROM <table> WHERE {row_filter_column} = {donor_id}) AS <table>
 Because of this you MUST follow these rules:
 - NEVER use a table alias in aggregate functions. Write SUM(DonationAmount), NOT SUM(d.DonationAmount).
 - NEVER prefix column names with a table name. Write DonationAmount, NOT Donations.DonationAmount.
-- The donor filter is already applied -- do NOT add your own WHERE DonorId = ... clause.
+- The filter is already applied -- do NOT add your own WHERE {row_filter_column} = ... clause.
 """
 
     conversation_context = ""
@@ -563,17 +563,27 @@ def create_user_route():
             donor_id = int(donor_id)
         except (TypeError, ValueError):
             return jsonify({"status": "error", "message": "donor_id must be an integer."}), 400
-        # Confirm this donor_id actually exists in the Donors table --
-        # otherwise the account would be scoped to rows that don't exist.
-        try:
-            with engine.connect() as connection:
-                exists = connection.execute(
-                    text("SELECT 1 FROM Donors WHERE DonorId = :did"), {"did": donor_id}
-                ).fetchone()
-        except SQLAlchemyError as db_error:
-            return jsonify({"status": "error", "message": f"Could not verify donor_id: {db_error}"}), 500
-        if exists is None:
-            return jsonify({"status": "error", "message": f"No donor with DonorId={donor_id} exists."}), 400
+        # Confirm this donor_id actually exists in the role's identity
+        # table -- otherwise the account would be scoped to rows that
+        # don't exist. identity_table/row_filter_column come from our own
+        # roles_config.py (never from request input), so interpolating
+        # them as identifiers here is safe -- only the donor_id value
+        # itself is user-supplied, and that stays a bound parameter.
+        identity_table = role.get("identity_table")
+        if identity_table is not None:
+            try:
+                with engine.connect() as connection:
+                    exists = connection.execute(
+                        text(f"SELECT 1 FROM {identity_table} WHERE {role['row_filter_column']} = :did"),
+                        {"did": donor_id},
+                    ).fetchone()
+            except SQLAlchemyError as db_error:
+                return jsonify({"status": "error", "message": f"Could not verify donor_id: {db_error}"}), 500
+            if exists is None:
+                return jsonify({
+                    "status": "error",
+                    "message": f"No {role['label']} with {role['row_filter_column']}={donor_id} exists.",
+                }), 400
     else:
         donor_id = None
 
@@ -602,6 +612,33 @@ def analytics_recent():
     success_param = request.args.get('success')
     success = None if success_param is None else success_param not in ('0', 'false', 'False')
     return jsonify(query_analytics.get_recent(limit=limit, path=path, success=success)), 200
+
+
+def _db_connection_error_response(db_error, user_query, role_name, donor_id, timer):
+    """
+    Shared response shape for a SQLAlchemyError raised while just trying
+    to reach the database (bad/missing credentials, DB not reachable,
+    wrong DB_NAME, etc.) -- as opposed to a query that reached the
+    database and failed there, which gets its own handling in the
+    self-healing retry loop below. Factored out because schema-harvest
+    failures can now happen at two points in generate_sql (before the
+    cache check, and again -- via the same call -- reused for the LLM
+    prompt) and both should look identical to the caller.
+    """
+    error_detail = str(db_error._message()) if hasattr(db_error, '_message') else str(db_error)
+    print(f"\n--- DATABASE CONNECTION/QUERY FAILURE ---\n{error_detail}\n----------------------------\n")
+    query_analytics.log_query(
+        user_query, role_name, donor_id, path="error", success=False, timer=timer,
+        failure_reason=f"DB connection error: {error_detail[:280]}",
+    )
+    return jsonify({
+        "status": "error",
+        "error_code": "DATABASE_CONNECTION_ERROR",
+        "message": "Could not connect to or query the database. Check that .env has correct "
+                    "DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME and that the database server "
+                    "is running and reachable.",
+        "database_error": error_detail
+    }), 500
 
 
 @app.route('/api/generate-sql', methods=['POST'])
@@ -653,7 +690,11 @@ def generate_sql():
                 "message": "donor_id must be an integer."
             }), 400
 
-    allowed_tables = role["allowed_tables"]
+    # For an unrestricted role this is just role["allowed_tables"] (None).
+    # For a row-filtered role (e.g. donor) it's computed fresh against
+    # whatever database is live right now -- see roles_config.py's
+    # resolve_allowed_tables docstring for why this isn't a static list.
+    allowed_tables = roles_config.resolve_allowed_tables(role_name)
     row_filter_column = role["row_filter_column"]
 
     # Cache and staging-queue entries are scoped per role+donor via real
@@ -760,6 +801,19 @@ def generate_sql():
             "transform_log": conv_state["transform_log"],
         }
 
+    # 2a-bis. Live schema + fingerprint -- harvested once per request,
+    # here (rather than down in step 3, where this used to live) so the
+    # cache-lookup step below can tell whether the database's shape has
+    # changed since an entry was cached, BEFORE trusting that entry.
+    # Reused as-is by the LLM prompt-building step further down on a
+    # cache/catalog miss, so this is never fetched twice in one request.
+    try:
+        with timer.phase("schema_harvest"):
+            db_dialect, live_schema = extract_live_metadata(allowed_tables=allowed_tables)
+    except SQLAlchemyError as db_error:
+        return _db_connection_error_response(db_error, user_query, role_name, donor_id, timer)
+    schema_fingerprint = compute_schema_fingerprint(live_schema)
+
     # 2b. Deterministic Catalog Check (Path 3) -- admin-promoted questions
     # skip the LLM entirely and run live against the DB every time, so
     # the data is always fresh even though no model call happens.
@@ -819,6 +873,21 @@ def generate_sql():
     if not is_followup:
         with timer.phase("cache_lookup"):
             cached = query_cache.get_cached_or_similar(user_query, role_name, donor_id)
+        # DATABASE-CHANGE SAFETY: a cached entry's schema_fingerprint is
+        # None for rows written before this check existed (trust them,
+        # same graceful-degradation convention as the embedding columns)
+        # or a real hash otherwise. If it doesn't match the schema we
+        # just harvested moments ago, the database has changed shape
+        # since this SQL/data was generated -- swapped for a different
+        # database, a table renamed, a column dropped, etc. Unlike the
+        # disallowed-tables check below, this ISN'T a security violation,
+        # so it doesn't error out: it just invalidates the stale entry
+        # and falls through to a fresh LLM+DB round trip, exactly as if
+        # this had been a cache miss all along.
+        if cached and cached["schema_fingerprint"] not in (None, schema_fingerprint):
+            print("[Cache] Invalidating entry stale against current schema (fingerprint changed)")
+            query_cache.invalidate_by_key(cached["cache_key"])
+            cached = None
         if cached:
             table_access_ok, disallowed_tables = access_control.check_table_access(
                 cached["generated_sql"], allowed_tables
@@ -862,16 +931,16 @@ def generate_sql():
             }), 200
 
     try:
-        # 3. Dynamic Context & Dialect Harvesting -- only the tables this
-        # role is allowed to see are ever shown to the LLM.
-        with timer.phase("schema_harvest"):
-            db_dialect, live_schema = extract_live_metadata(allowed_tables=allowed_tables)
+        # 3. Dynamic Context & Dialect Harvesting -- already done above
+        # (step 2a-bis), before the cache check. db_dialect/live_schema
+        # are reused as-is here, not re-fetched.
 
         # 4. Strict System Boundary Construction -- see build_system_prompt
         # (shared with the follow-up-modify tier above so the dialect/
         # security/schema rules never drift between the two call sites).
         system_prompt = build_system_prompt(
-            db_dialect, live_schema, allowed_tables, donor_id, followup_context=followup_context
+            db_dialect, live_schema, allowed_tables, donor_id,
+            row_filter_column=row_filter_column, followup_context=followup_context,
         )
 
         # 5. The Execution & Agentic Healing Loop
@@ -1009,7 +1078,10 @@ def generate_sql():
                     # let an unrelated future conversation match a wrong
                     # cached query keyed on the same coincidental words.
                     if not is_followup:
-                        query_cache.set_cached(user_query, role_name, donor_id, current_sql, data)
+                        query_cache.set_cached(
+                            user_query, role_name, donor_id, current_sql, data,
+                            schema_fingerprint=schema_fingerprint,
+                        )
                     staging_queue.log_entry(user_query, role_name, donor_id, current_sql, "Approved", f"Executed successfully, {attempt} retries")
                     query_analytics.log_query(
                         user_query, role_name, donor_id, path="llm", success=True, timer=timer,
@@ -1109,24 +1181,12 @@ Return ONLY the corrected raw SQL string. Do not include markdown formatting or 
 
     except SQLAlchemyError as db_error:
         # A DB-connectivity failure (bad/missing credentials, DB not
-        # reachable, wrong DB_NAME, etc.) most commonly happens here --
-        # before the retry loop even starts, while harvesting the live
-        # schema -- so it deserves its own distinct, actionable message
-        # instead of falling into the generic catch-all below.
-        error_detail = str(db_error._message()) if hasattr(db_error, '_message') else str(db_error)
-        print(f"\n--- DATABASE CONNECTION/QUERY FAILURE ---\n{error_detail}\n----------------------------\n")
-        query_analytics.log_query(
-            user_query, role_name, donor_id, path="error", success=False, timer=timer,
-            failure_reason=f"DB connection error: {error_detail[:280]}",
-        )
-        return jsonify({
-            "status": "error",
-            "error_code": "DATABASE_CONNECTION_ERROR",
-            "message": "Could not connect to or query the database. Check that .env has correct "
-                        "DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME and that the database server "
-                        "is running and reachable.",
-            "database_error": error_detail
-        }), 500
+        # reachable, wrong DB_NAME, etc.) is normally already caught by
+        # the schema-harvest try/except above (step 2a-bis) and never
+        # reaches here. This is a defensive fallback for any other
+        # SQLAlchemyError raised in this block before the retry loop's
+        # own handling takes over.
+        return _db_connection_error_response(db_error, user_query, role_name, donor_id, timer)
 
     except Exception as e:
         # 6. FATAL ERROR EXPOSURE

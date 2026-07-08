@@ -116,6 +116,14 @@ def _get_connection():
     if "content_words" not in existing_cols:
         conn.execute("ALTER TABLE query_cache ADD COLUMN content_words TEXT")
 
+    # Additive backfill for DBs created before schema-drift detection
+    # existed. NULL on old rows means "unknown, trust it" (the same
+    # graceful-degradation convention as the columns above) rather than
+    # "definitely stale" -- only a *mismatched* fingerprint invalidates
+    # an entry, see get_cached_or_similar's caller in app.py.
+    if "schema_fingerprint" not in existing_cols:
+        conn.execute("ALTER TABLE query_cache ADD COLUMN schema_fingerprint TEXT")
+
     return conn
 
 
@@ -128,7 +136,7 @@ def _cache_key(query_text, role_name, donor_id):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _row_to_result(cache_key, generated_sql, result_json, hit_count, match_type, similarity=1.0):
+def _row_to_result(cache_key, generated_sql, result_json, hit_count, match_type, similarity=1.0, schema_fingerprint=None):
     return {
         "cache_key": cache_key,
         "generated_sql": generated_sql,
@@ -136,6 +144,7 @@ def _row_to_result(cache_key, generated_sql, result_json, hit_count, match_type,
         "hit_count": hit_count,
         "match_type": match_type,
         "similarity": round(similarity, 4),
+        "schema_fingerprint": schema_fingerprint,
     }
 
 
@@ -160,14 +169,14 @@ def get_cached(query_text, role_name, donor_id):
     conn = _get_connection()
     try:
         row = conn.execute(
-            "SELECT generated_sql, result_json, hit_count FROM query_cache WHERE cache_key = ?",
+            "SELECT generated_sql, result_json, hit_count, schema_fingerprint FROM query_cache WHERE cache_key = ?",
             (cache_key,),
         ).fetchone()
         if row is None:
             return None
-        generated_sql, result_json, hit_count = row
+        generated_sql, result_json, hit_count, schema_fingerprint = row
         new_hit_count = _touch_hit_count(conn, cache_key, hit_count)
-        return _row_to_result(cache_key, generated_sql, result_json, new_hit_count, "exact")
+        return _row_to_result(cache_key, generated_sql, result_json, new_hit_count, "exact", schema_fingerprint=schema_fingerprint)
     finally:
         conn.close()
 
@@ -189,7 +198,7 @@ def find_semantic_match(query_text, role_name, donor_id):
         rows = conn.execute(
             """
             SELECT cache_key, generated_sql, result_json, hit_count, embedding,
-                   entity_signature, content_words
+                   entity_signature, content_words, schema_fingerprint
             FROM query_cache
             WHERE role_name = ? AND donor_id IS ? AND embedding IS NOT NULL
             """,
@@ -197,7 +206,7 @@ def find_semantic_match(query_text, role_name, donor_id):
         ).fetchall()
 
         candidates = []
-        for cache_key, generated_sql, result_json, hit_count, embedding_json, signature_json, content_words_json in rows:
+        for cache_key, generated_sql, result_json, hit_count, embedding_json, signature_json, content_words_json, schema_fingerprint in rows:
             candidates.append({
                 "cache_key": cache_key,
                 "generated_sql": generated_sql,
@@ -206,6 +215,7 @@ def find_semantic_match(query_text, role_name, donor_id):
                 "embedding": json.loads(embedding_json),
                 "entity_signature": frozenset(json.loads(signature_json)),
                 "content_words": frozenset(json.loads(content_words_json)) if content_words_json else frozenset(),
+                "schema_fingerprint": schema_fingerprint,
             })
 
         match, score = semantic_match.find_best_match(query_text, query_embedding, candidates)
@@ -215,7 +225,7 @@ def find_semantic_match(query_text, role_name, donor_id):
         new_hit_count = _touch_hit_count(conn, match["cache_key"], match["hit_count"])
         return _row_to_result(
             match["cache_key"], match["generated_sql"], match["result_json"],
-            new_hit_count, "semantic", similarity=score,
+            new_hit_count, "semantic", similarity=score, schema_fingerprint=match["schema_fingerprint"],
         )
     finally:
         conn.close()
@@ -233,13 +243,20 @@ def get_cached_or_similar(query_text, role_name, donor_id):
     return find_semantic_match(query_text, role_name, donor_id)
 
 
-def set_cached(query_text, role_name, donor_id, generated_sql, data):
+def set_cached(query_text, role_name, donor_id, generated_sql, data, schema_fingerprint=None):
     """
     Save a new question -> answer pair so future repeats (exact or
     semantic, by this same role+donor) are instant. Embedding generation
     failure is non-fatal: the row is still written with embedding=NULL,
     which simply means it won't be considered for future semantic
     matches until it's re-written (exact-match caching is unaffected).
+
+    schema_fingerprint: a hash of the live schema's shape at the moment
+    this was generated (see schema_harvester.compute_schema_fingerprint),
+    stored so a future lookup can tell whether the database has changed
+    shape since -- see get_cached_or_similar's caller in app.py. Optional
+    (defaults to None, meaning "unknown, always trust it") so existing
+    call sites that don't have a fingerprint handy still work.
     """
     cache_key = _cache_key(query_text, role_name, donor_id)
     now = datetime.now(timezone.utc).isoformat()
@@ -256,19 +273,20 @@ def set_cached(query_text, role_name, donor_id, generated_sql, data):
             INSERT INTO query_cache
                 (cache_key, role_name, donor_id, original_query, generated_sql,
                  result_json, hit_count, created_at, last_used_at, embedding,
-                 entity_signature, content_words)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                 entity_signature, content_words, schema_fingerprint)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
-                generated_sql    = excluded.generated_sql,
-                result_json      = excluded.result_json,
-                last_used_at     = excluded.last_used_at,
-                embedding        = excluded.embedding,
-                entity_signature = excluded.entity_signature,
-                content_words    = excluded.content_words
+                generated_sql      = excluded.generated_sql,
+                result_json        = excluded.result_json,
+                last_used_at       = excluded.last_used_at,
+                embedding          = excluded.embedding,
+                entity_signature   = excluded.entity_signature,
+                content_words      = excluded.content_words,
+                schema_fingerprint = excluded.schema_fingerprint
             """,
             (cache_key, role_name, donor_id, query_text, generated_sql,
              json.dumps(data, default=str), now, now, embedding_json,
-             entity_signature_json, content_words_json),
+             entity_signature_json, content_words_json, schema_fingerprint),
         )
         conn.commit()
     finally:

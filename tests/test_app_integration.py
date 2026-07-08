@@ -15,6 +15,8 @@ string-rewriting logic in isolation (see test_access_control.py).
 
 import json
 
+from sqlalchemy import text as sql_text
+
 from conftest import login
 
 
@@ -333,3 +335,60 @@ class TestRoleTiers:
         viewer_entry = next(e for e in queue if e["role_name"] == "viewer")
         response = client.post(f"/api/promote/{viewer_entry['id']}")
         assert response.status_code == 200
+
+
+class TestDatabaseSchemaChange:
+    """
+    The point of the schema-fingerprint check: if the underlying
+    database changes shape after a question was cached (a table gets a
+    new column, gets renamed, the whole database gets swapped for a
+    different one, ...), a repeat of that same question must NOT
+    silently replay the old cached answer -- it should look like a
+    fresh cache miss and go through the LLM again.
+    """
+
+    def test_cache_hit_before_schema_change(self, client, fake_llm):
+        login(client, "admin", "admin123")
+        fake_llm.returns("SELECT COUNT(*) FROM Donors")
+        client.post("/api/generate-sql", json={"query": "how many donors"})
+        assert len(fake_llm.calls) == 1
+
+        response = client.post("/api/generate-sql", json={"query": "how many donors"})
+        assert response.get_json()["cached"] is True
+        assert len(fake_llm.calls) == 1  # still just the original call
+
+    def test_schema_change_invalidates_the_cache_instead_of_replaying_stale_data(
+        self, client, fake_llm, app_module
+    ):
+        login(client, "admin", "admin123")
+        fake_llm.returns("SELECT COUNT(*) FROM Donors")
+        client.post("/api/generate-sql", json={"query": "how many donors"})
+        client.post("/api/generate-sql", json={"query": "how many donors"})  # cache hit
+        assert len(fake_llm.calls) == 1
+
+        # Simulate the database changing shape underneath the app --
+        # e.g. a migration ran, or the whole database was swapped.
+        with app_module.engine.begin() as connection:
+            connection.execute(sql_text("ALTER TABLE Donors ADD COLUMN LoyaltyTier TEXT"))
+
+        fake_llm.returns("SELECT COUNT(*) FROM Donors")
+        response = client.post("/api/generate-sql", json={"query": "how many donors"})
+        body = response.get_json()
+        # Must NOT silently replay the pre-change cached answer: this
+        # has to look like a fresh generation, not a cache hit.
+        assert body.get("cached") is not True
+        assert len(fake_llm.calls) == 2
+
+    def test_donor_role_table_list_adapts_to_a_renamed_table(self, client, fake_llm, app_module):
+        # Rename Donations -> Contributions but keep its DonorId column.
+        # A donor asking about their contributions must still be able to
+        # reach it -- roles_config.py was never told this table's new
+        # name, it has to be discovered live.
+        with app_module.engine.begin() as connection:
+            connection.execute(sql_text("ALTER TABLE Donations RENAME TO Contributions"))
+
+        login(client, "donor1", "donor123")
+        fake_llm.returns("SELECT SUM(DonationAmount) FROM Contributions")
+        response = client.post("/api/generate-sql", json={"query": "how much have I donated"})
+        assert response.status_code == 200
+        assert response.get_json()["status"] == "success"

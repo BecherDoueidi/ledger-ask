@@ -8,6 +8,26 @@ in one place, forget the other).
 
 Credentials are read from environment variables / a .env file rather than
 hardcoded. See .env.example for the variables you need to set.
+
+Swapping databases: everything else in this codebase (schema harvesting,
+role-based table/row scoping, the LLM prompt's dialect rules) already
+adapts to whatever's live at request time -- see schema_harvester.py and
+roles_config.py. The one thing that's inherently connection-specific is
+this file. Two ways to point at a different database:
+
+  - Same engine (MySQL), different host/credentials/name: just change
+    DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME in .env. Nothing else to
+    touch.
+  - A different DBMS entirely (Postgres, SQL Server, SQLite, ...): set
+    DATABASE_URL in .env to a full SQLAlchemy connection URL, e.g.
+    postgresql+psycopg2://user:pass@host:5432/dbname. This takes
+    precedence over the individual DB_* vars below. You'll need the
+    matching driver package installed (e.g. psycopg2-binary for
+    Postgres) -- that's the one piece this can't auto-install for you.
+    The LLM prompt already has explicit dialect rules for sqlite/mysql
+    (see app.py's build_system_prompt); other dialects still work --
+    SQLAlchemy reports the real dialect name and it's told to the
+    model -- they just don't get dialect-specific few-shot examples yet.
 """
 
 import os
@@ -27,7 +47,7 @@ DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_NAME = os.getenv("DB_NAME", "")
 
-CONNECTION_STRING = (
+CONNECTION_STRING = os.getenv("DATABASE_URL") or (
     f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 

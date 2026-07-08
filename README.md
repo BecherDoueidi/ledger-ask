@@ -16,7 +16,7 @@ This is a University of Sharjah "Summer 2026 Training" internship project (Compa
 - **Semantic query cache** — reuses answers for paraphrased questions via embeddings + cosine similarity, not just exact-string matches, with calibrated guards against false positives.
 - **Multi-turn conversation** — follow-up questions ("sort them by name," "chart it") resolve against the existing result set with zero additional AI calls wherever possible.
 - **Automatic chart recommendation** — rule-based, extensible chart-type selection from result-set shape, with a manual override switcher in the UI.
-- **198 passing tests** (pytest) — unit coverage for every core module plus full end-to-end integration tests, including a test that proves row-level security actually holds through the whole request pipeline.
+- **218 passing tests** (pytest) — unit coverage for every core module plus full end-to-end integration tests, including a test that proves row-level security actually holds through the whole request pipeline.
 
 ## Quickstart
 
@@ -50,12 +50,12 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 ## Architecture & Tech Stack
 
 - **Backend**: Python 3, Flask (`app.py`) — single-process monolith, no separate API/frontend split.
-- **Database (business data)**: MySQL, accessed via SQLAlchemy + `pymysql` (`db_config.py`). Connection string built from `.env` (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`); `pool_pre_ping=True` to survive MySQL's idle-connection drops.
+- **Database (business data)**: MySQL by default, accessed via SQLAlchemy + `pymysql` (`db_config.py`). Connection string built from `.env` (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`); `pool_pre_ping=True` to survive MySQL's idle-connection drops. Any other SQLAlchemy-supported dialect (Postgres, SQL Server, SQLite, ...) works by setting `DATABASE_URL` instead — see `db_config.py`'s docstring.
 - **LLM inference**: local Ollama instance, model `qwen2.5-coder:14b`, accessed via the OpenAI-compatible client (`openai` package). Embeddings for semantic caching via Ollama's `nomic-embed-text` model.
 - **Application-state storage**: SQLite, one file per concern (not the business data) — `query_cache.db`, `conversation_state.db`, `query_analytics.db`, `staging_queue.db`, `users.db`. Kept separate from the MySQL business DB by design.
 - **Frontend**: vanilla JS/CSS, no framework. `static/js/app.js` (data table, chart rendering, conversation transcript UI), `static/js/common.js`, `static/css/style.css` (light/dark theme via CSS custom properties + `data-theme` attribute). Charts via Chart.js.
 - **Templates**: Flask/Jinja — `templates/login.html`, `templates/index.html` (main dashboard), `templates/admin.html` (staging queue / promotion UI).
-- **Testing**: pytest, 198 tests across 13 files in `tests/`. Fixtures in `tests/conftest.py` isolate all SQLite stores to `tmp_path`, fake the LLM, and stand up a temporary SQLite database in place of MySQL for integration tests.
+- **Testing**: pytest, 218 tests across 15 files in `tests/`. Fixtures in `tests/conftest.py` isolate all SQLite stores to `tmp_path`, fake the LLM, and stand up a temporary SQLite database in place of MySQL for integration tests.
 - **Config/secrets**: `.env` (gitignored), `.env.example` as the template. `catalog.yaml` holds deterministic promoted-query manifests.
 
 ---
@@ -82,6 +82,13 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 - Every admin-side route names the specific capability it needs (e.g. `@capability_required("can_promote_to_catalog")`) rather than checking `role == "admin"`, so adding a new capability or tier doesn't require touching every route. `templates/admin.html` mirrors this server-side gating in the UI (hides the user-management section and Clear Cache button, and swaps the Promote button for a disabled "Awaiting admin promotion" tag) so lower tiers never see actions they can't take.
 - Catalog-promotion eligibility (`roles_config.is_row_restricted`) is judged by whether the *originating* role is row-filtered, not by role name — any of viewer/analyst/admin's questions are equally safe to promote since none of them carry a baked-in row restriction.
 
+**Database portability** — the system is built to keep working correctly if the connected database is swapped, migrated, or restructured, without code changes:
+- **Schema is never cached at startup.** `schema_harvester.extract_live_metadata()` re-inspects the live database (via SQLAlchemy's `inspect()`) on every fresh question, so a table/column added, removed, or renamed shows up immediately.
+- **Row-scoped roles discover their own table list.** `donor`'s `allowed_tables` isn't a hardcoded list in `roles_config.py` — `roles_config.resolve_allowed_tables()` calls `schema_harvester.discover_row_scoped_tables("DonorId")` fresh on every request, returning every live table that currently has a `DonorId` column. Rename `Donations` to `Contributions` and it's still found and correctly row-filtered; nobody has to update `roles_config.py`.
+- **Cache entries carry a schema fingerprint** (`schema_harvester.compute_schema_fingerprint`, a hash of the live table/column shape, stored in `query_cache.db`). A cache lookup compares the stored fingerprint against the database's current shape; on a mismatch (e.g. the whole database was swapped for a different one), the stale entry is invalidated and the request falls through to a fresh LLM+DB round trip instead of silently replaying an answer computed against a schema that no longer exists.
+- **Connection string is swappable**: set `DATABASE_URL` in `.env` to point at any SQLAlchemy-supported database engine, not just MySQL (see `db_config.py`). The LLM prompt already reports whatever dialect SQLAlchemy detects.
+- What *isn't* automatic: `roles_config.py`'s `row_filter_column` (the ownership-column name to look for, e.g. `"DonorId"`) and `identity_table` (used to validate a donor_id exists when creating an account) are the two pieces of business knowledge that can't be inferred from schema shape alone — if a new database uses a totally different row-ownership convention, those two config values need updating by hand. Everything downstream of them adapts automatically.
+
 **Conversational UX:**
 - Session-scoped conversation state (`conversation_state.py`), 30-minute TTL, isolated per user/session.
 - Follow-up detection (`is_followup`) distinguishes true follow-ups (pronoun references, leading transform verbs) from unrelated new questions.
@@ -96,10 +103,11 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 - Analytics-dashboard-style UI: scrollable conversation transcript, sortable/searchable/paginated result tables, one-click SQL copy, CSV/JSON export, toast notifications, loading-skeleton states, light/dark theme toggle, responsive layout.
 - Admin dashboard (`templates/admin.html`) for reviewing and promoting staged queries into `catalog.yaml`.
 
-**Testing (198 tests, pytest):**
-- Unit coverage for every pure-logic module (`chart_advisor`, `semantic_match`, `followup_resolver`, `catalog_manager`, `query_cache`, `conversation_state`, `query_analytics`, `staging_queue`, `access_control`, `auth`).
+**Testing (218 tests, pytest):**
+- Unit coverage for every pure-logic module (`chart_advisor`, `semantic_match`, `followup_resolver`, `catalog_manager`, `query_cache`, `conversation_state`, `query_analytics`, `staging_queue`, `access_control`, `auth`, `roles_config`, `schema_harvester`).
 - Integration tests (`test_app_integration.py`) drive the full `/api/generate-sql` pipeline via the Flask test client against a fake LLM and a temporary SQLite database standing in for MySQL — including an end-to-end test proving row-level security is actually enforced through the whole stack, not just in isolated unit tests.
 - `TestRoleTiers` pins down the viewer/analyst/admin capability boundary: which routes each tier can and can't reach, and that catalog-promotion eligibility follows row-restriction status rather than role name.
+- `TestDatabaseSchemaChange` proves the database-portability behavior end-to-end: a cached answer is confirmed to hit normally, the test database's schema is altered mid-test (`ALTER TABLE ... ADD COLUMN`), and the same question is confirmed to NOT replay the stale cached answer — plus a table-rename test confirming a donor's row-scoped table list adapts without any config change.
 - All state-bearing modules are redirected to `tmp_path` via autouse fixtures in `conftest.py`; embeddings default to `None` in tests (`no_real_embeddings` fixture) so tests never depend on a live Ollama instance.
 
 ---
@@ -107,7 +115,8 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 ## Active Work & Immediate Next Steps
 
 - **RBAC tier split is done.** `admin` was split into `viewer` / `analyst` / `admin` (see roles_config.py's `can_*` flags), `donor` unchanged. `app.py` routes, `templates/index.html`, and `templates/admin.html` all gate on capability flags rather than `role == "admin"`. Demo accounts for all four tiers are seeded by `auth.seed_default_users()`.
-- **Testing was prioritized as the top gap** and has been substantially closed (198 tests now exist, including the new `TestRoleTiers` coverage for the RBAC split); next test-worthy surface area is whatever ships next.
+- **Database portability is done.** The donor role's table access, the schema shown to the LLM, and the query cache all now adapt to a live database's actual current shape instead of assuming a fixed schema — see "Database portability" above. The one remaining manual step after swapping in a genuinely different database is updating `row_filter_column`/`identity_table` in `roles_config.py` if the new schema uses a different row-ownership naming convention.
+- **Testing was prioritized as the top gap** and has been substantially closed (218 tests now exist, including `TestRoleTiers` for the RBAC split and `TestDatabaseSchemaChange` for the portability work); next test-worthy surface area is whatever ships next.
 - Recently deferred/skipped (per explicit instruction not to duplicate existing coverage): audit trail, query versioning, observability dashboard, query explanations, additional SQL safety hardening beyond the existing DML/DDL fence — these were proposed but not started; re-evaluate priority now that RBAC and testing are both in place.
 - Two real bugs were found and fixed via live testing (not caught by the original test suite, now covered by regression tests in `test_followup_resolver.py`):
   - Cache-hit numeric values (MySQL `DECIMAL` round-tripped through JSON as strings) were sorting lexicographically instead of numerically in follow-up sort transforms — fixed in `followup_resolver.py`'s sort branch.
@@ -120,7 +129,7 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 
 - **Never trust LLM-generated SQL as-is.** Every generation path — fresh, cached, or follow-up-escalated — must pass through the same table-allowlist + row-filter rewrite and DML/DDL output fence. Any new query-producing code path must be wired through this same enforcement, not bypass it.
 - **Business data lives in MySQL; app state lives in SQLite.** Do not conflate the two, and do not add new application state (cache, conversation, analytics, staging) directly into the MySQL business schema — follow the existing pattern of a dedicated SQLite store.
-- **Row-level filtering is table-name-driven** (`row_filter_column` applied per allowed table). Any new table added to a role's `allowed_tables` for a row-filtered role must actually contain that filter column, or the filter rewrite will fail or silently under-filter.
+- **Row-level filtering is column-name-driven, not table-name-driven.** A row-filtered role's table list is discovered live from whichever tables currently have the `row_filter_column` (see "Database portability" above) — so this mostly maintains itself. The one thing that still requires a manual `roles_config.py` edit is the row-ownership *column name* itself (`row_filter_column`) and the `identity_table` used for account-creation validation, if a new database uses a different convention for either.
 - **`CampaignId`-as-numeric is a known, accepted chart-advisor limitation**: when a query returns `CampaignId` + a numeric aggregate without joining to get a display name, both columns look numeric to the classifier and it renders a scatter chart instead of a bar chart. This is a documented edge case, not a bug to silently "fix" by special-casing `CampaignId` — the correct fix (if pursued) is encouraging joins to display-name columns, not hardcoding column-name exceptions into `chart_advisor.py`.
 - **Chart-type switcher excludes scatter** (`SWITCHABLE_TYPES = ["bar", "line", "pie"]`) because scatter requires a different data shape (paired numeric axes) than the categorical-axis chart types — do not add scatter to the switchable set without also handling the data reshape.
 - **Semantic cache thresholds are empirically calibrated, not arbitrary** — `SIMILARITY_THRESHOLD=0.80` and `CONTENT_OVERLAP_THRESHOLD=0.5` in `semantic_match.py` were tuned against real embedding-model output (e.g., "this year" vs "last year" scores 0.978 cosine similarity despite being semantically opposite, which is why the entity-signature guard exists independently of the cosine threshold). Do not raise/lower these without re-validating against the documented calibration cases in the module docstring.

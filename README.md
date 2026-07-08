@@ -2,7 +2,7 @@
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Flask](https://img.shields.io/badge/flask-3-black)
-![Tests](https://img.shields.io/badge/tests-198%20passing-brightgreen)
+[![Tests](https://github.com/BecherDoueidi/ledger-ask/actions/workflows/tests.yml/badge.svg)](https://github.com/BecherDoueidi/ledger-ask/actions/workflows/tests.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
 
 A Flask middleware that translates natural-language questions into governed SQL against a MySQL business database, built for a UAE charity's internal reporting use case. The system prioritizes **correctness and safety over raw speed**: every query passes through role-based access control before generation and a table-allowlist + row-level filter rewrite after generation, regardless of what the LLM produces. A three-tier resolution pipeline (deterministic catalog match → in-memory transform → LLM generation) is used to avoid unnecessary model calls wherever a cheaper, deterministic path can answer correctly.
@@ -126,4 +126,4 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 - **Semantic cache thresholds are empirically calibrated, not arbitrary** — `SIMILARITY_THRESHOLD=0.80` and `CONTENT_OVERLAP_THRESHOLD=0.5` in `semantic_match.py` were tuned against real embedding-model output (e.g., "this year" vs "last year" scores 0.978 cosine similarity despite being semantically opposite, which is why the entity-signature guard exists independently of the cosine threshold). Do not raise/lower these without re-validating against the documented calibration cases in the module docstring.
 - **Tests must stay hermetic.** `conftest.py`'s autouse fixtures redirect all SQLite-backed stores to `tmp_path` and mock embeddings to `None` by default — any new state-bearing module must register itself with the same isolation pattern, and any new test must not depend on a live Ollama instance or the real MySQL database.
 - **`import app` runs `auth.seed_default_users()` once per process** — tests that need fresh users per-test must explicitly re-seed; this is a known quirk of the `app_module` fixture, not a bug.
-- **No CI/CD pipeline currently exists.** Test suite must currently be run manually (`pytest`) before considering any change complete.
+- **CI runs the test suite on every push/PR to `master`** (`.github/workflows/tests.yml`, GitHub Actions). It only runs `pytest` — no deploy step exists yet, so shipping to any real environment is still a manual process.

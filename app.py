@@ -1202,4 +1202,4 @@ Return ONLY the corrected raw SQL string. Do not include markdown formatting or 
             "internal_error": str(e)
         }), 500
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=int(os.getenv('PORT', 5000)), debug=True)

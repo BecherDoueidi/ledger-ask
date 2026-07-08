@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ledger·Ask — Ask your database</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="topbar">
+        <div class="brand">
+            <span class="brand-mark">L</span>
+            Ledger·Ask
+        </div>
+        <div class="actions">
+            {% set role_badge = {'admin': 'badge-warning', 'analyst': 'badge-accent', 'viewer': 'badge-neutral', 'donor': 'badge-info'} %}
+            <span class="badge {{ role_badge.get(role, 'badge-info') }}">{{ role }}</span>
+            <span class="username-label" style="font-size:0.85rem; color:var(--text-secondary);">{{ username }}</span>
+            {% if can_view_admin_panel %}
+            <a href="/admin" class="btn btn-ghost btn-sm"><span class="nav-label-full">Admin Queue</span><span class="nav-label-short">Queue</span></a>
+            {% endif %}
+            <button class="theme-toggle" id="theme-toggle" type="button" title="Toggle theme">🌓</button>
+            <form method="POST" action="/logout" style="margin:0;">
+                <button type="submit" class="btn btn-secondary btn-sm">Log out</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="page-container">
+        <div class="card" style="padding: 24px 26px;">
+            <h1 style="font-size:1.5rem; font-weight:700; letter-spacing:-0.02em; margin:0 0 4px;">Ask your database</h1>
+            <p style="color:var(--text-secondary); font-size:0.92rem; margin:0 0 20px;">
+                Plain English in, SQL and results out. Ask a follow-up any time — "sort them by name," "only active donors," "chart it" all understand what you just saw.
+            </p>
+
+            <form id="ask-form" style="display:flex; gap:10px; align-items:flex-start;">
+                <textarea id="question" placeholder="e.g. How many active donors are there from the UAE?" rows="1" required
+                    style="flex:1; resize:none; min-height:44px;"></textarea>
+                <button type="submit" id="ask-btn" class="btn btn-primary" style="height:44px; padding:0 22px;">Ask</button>
+            </form>
+
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-top:12px;">
+                {% if not is_self_service %}
+                <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:0.8rem;">
+                    <span style="font-weight:600; color:var(--text-secondary);">Try:</span>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="fillExample(this.textContent)">How many active beneficiaries are there?</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="fillExample(this.textContent)">Show total donations by campaign</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="fillExample(this.textContent)">List the top 5 corporate donors by contribution</button>
+                </div>
+                {% else %}
+                <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:0.8rem;">
+                    <span style="font-weight:600; color:var(--text-secondary);">Try:</span>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="fillExample(this.textContent)">How many beneficiaries am I actively sponsoring?</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="fillExample(this.textContent)">How much have I donated in total?</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="fillExample(this.textContent)">Show my donation history</button>
+                </div>
+                {% endif %}
+                <button type="button" id="new-question-btn" class="btn btn-ghost btn-sm" title="Start a new, unrelated question">↺ New question</button>
+            </div>
+
+            <div style="margin-top:10px; font-size:0.74rem; color:var(--text-tertiary);">
+                <span class="kbd">Enter</span> to ask · <span class="kbd">Shift</span>+<span class="kbd">Enter</span> for a new line · <span class="kbd">/</span> to focus this box
+            </div>
+        </div>
+
+        <div id="empty-state" class="empty-state" style="margin-top:20px;">
+            <div class="empty-icon">💬</div>
+            <div class="empty-title">Ask a question above to get started</div>
+            <div class="empty-hint">Your results and any follow-up questions will appear here as a conversation.</div>
+        </div>
+
+        <div id="transcript" class="transcript" style="margin-top:20px;"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/common.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

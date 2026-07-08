@@ -1,0 +1,10 @@
+flask
+sqlalchemy
+openai
+pymysql
+python-dotenv
+pyyaml
+
+# test-only, not needed to run the app itself
+pytest
+requests

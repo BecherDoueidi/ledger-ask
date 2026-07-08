@@ -1,0 +1,25 @@
+# Environments
+.env
+.venv/
+env/
+venv/
+
+# Caches & Compiled Code
+__pycache__/
+*.pyc
+*.pyo
+
+# Local Databases (Do not push your test state)
+*.db
+*.sqlite3
+*.sqlite
+
+# Test artifacts
+.pytest_cache/
+
+# Claude Code local settings (machine-specific permission grants)
+.claude/settings.local.json
+
+# OS Generated
+.DS_Store
+Thumbs.db

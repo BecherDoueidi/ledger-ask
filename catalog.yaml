@@ -1,0 +1,16 @@
+# Enterprise Promoted Query Catalog
+# Queries defined here bypass the LLM entirely.
+#
+# SECURITY NOTE: this file is a GLOBAL, unrestricted shortcut list.
+# app.py only ever matches against it for the admin role, and only ever
+# writes to it (via /api/promote) for staging-queue entries that were
+# originally asked by an admin. Never hand-add an entry whose SQL is
+# scoped to one specific donor's rows -- there is no row-level filter
+# applied to catalog matches, so it would leak that donor's data to
+# whoever else's question text happens to match the intent.
+
+promoted_queries:
+  - intent: "show me total revenue for al-nasserya"
+    sql: "SELECT app_user.vw_rev_by_center.total_revenue FROM app_user.vw_rev_by_center WHERE app_user.vw_rev_by_center.center_name = 'Al-Nasserya'"
+  - intent: "how many donors"
+    sql: SELECT COUNT(DonorId) FROM donors

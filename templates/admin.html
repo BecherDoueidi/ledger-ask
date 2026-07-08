@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin — Ledger·Ask</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        h2 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; margin: 28px 0 14px; }
+        h2:first-of-type { margin-top: 0; }
+        .queue { display: flex; flex-direction: column; gap: 12px; }
+        .row-card {
+            padding: 16px 20px;
+            display: grid;
+            grid-template-columns: 36px 1fr 1.4fr auto auto;
+            gap: 18px;
+            align-items: start;
+            border-left: 3px solid var(--border-strong);
+        }
+        .row-card.is-rejected { border-left-color: var(--danger); }
+        .row-card.is-approved { border-left-color: var(--success); }
+        .row-card.is-promoted { border-left-color: var(--info); }
+        .col-id { font-family: 'JetBrains Mono', monospace; font-size: 0.76rem; color: var(--text-tertiary); padding-top: 3px; }
+        .col-question { font-size: 0.9rem; font-weight: 600; line-height: 1.4; }
+        .col-question .who {
+            display: block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.04em; color: var(--text-tertiary); margin-bottom: 4px;
+        }
+        .status-detail { display: block; margin-top: 6px; font-size: 0.75rem; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; line-height: 1.4; }
+        .col-action { display: flex; align-items: flex-start; justify-content: flex-end; }
+        .blocked-tag { color: var(--text-tertiary); font-size: 0.8rem; font-style: italic; }
+        .user-chip {
+            display: inline-flex; align-items: center; gap: 6px; margin: 0 8px 8px 0; padding: 4px 12px;
+            border: 1px solid var(--border); border-radius: 999px; font-size: 0.82rem; background: var(--surface-sunken);
+        }
+        .create-user-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-top: 14px; }
+        .create-user-form .field label {
+            display: block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.04em; color: var(--text-tertiary); margin-bottom: 4px;
+        }
+        .create-user-form .field input, .create-user-form .field select { font-size: 0.85rem; padding: 8px 10px; }
+        @media (max-width: 800px) {
+            .row-card { grid-template-columns: 1fr; }
+            .col-action { justify-content: flex-start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div class="brand"><span class="brand-mark">L</span>Ledger·Ask <span class="nav-label-full" style="font-weight:500; color:var(--text-tertiary); font-size:0.85rem; margin-left:4px;">/ Admin</span></div>
+        <div class="actions">
+            <a href="/" class="btn btn-ghost btn-sm"><span class="nav-label-full">← Ask a question</span><span class="nav-label-short">← Ask</span></a>
+            <span class="username-label" style="font-size:0.85rem; color:var(--text-secondary);">{{ username }}</span>
+            <button class="theme-toggle" id="theme-toggle" type="button" title="Toggle theme">🌓</button>
+            {% if can_clear_cache %}
+            <button class="btn btn-danger-ghost btn-sm" id="clear-cache-btn" type="button"><span class="nav-label-full">Clear cache</span><span class="nav-label-short">Clear</span></button>
+            {% endif %}
+            <form method="POST" action="/logout" style="margin:0;">
+                <button type="submit" class="btn btn-secondary btn-sm">Log out</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="page-container wide">
+        {% if can_manage_users %}
+        <h2>User accounts</h2>
+        <div class="card" style="padding: 18px 20px;">
+            <div id="users-list">Loading…</div>
+            <form id="create-user-form" class="create-user-form">
+                <div class="field">
+                    <label>Username</label>
+                    <input name="username" required>
+                </div>
+                <div class="field">
+                    <label>Password</label>
+                    <input name="password" type="text" required>
+                </div>
+                <div class="field">
+                    <label>Role</label>
+                    <select name="role" id="role-select">
+                        <option value="donor">Donor</option>
+                        <option value="viewer">Viewer</option>
+                        <option value="analyst">Analyst</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                <div class="field" id="donor-id-field">
+                    <label>Donor ID</label>
+                    <input name="donor_id" type="number" min="1" style="width:90px;">
+                </div>
+                <button type="submit" class="btn btn-primary btn-sm">Create account</button>
+            </form>
+            <div id="create-user-message" style="margin-top:10px; font-size:0.82rem;"></div>
+        </div>
+        {% endif %}
+
+        <h2>Staging queue review</h2>
+        <div class="queue" id="queue-body"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/common.js') }}"></script>
+    <script>
+        const { toast, apiFetch } = window.LedgerAsk;
+        const CAN_PROMOTE = {{ 'true' if can_promote_to_catalog else 'false' }};
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str ?? '';
+            return div.innerHTML;
+        }
+
+        async function fetchQueue() {
+            const response = await apiFetch('/api/queue');
+            const data = await response.json();
+            const container = document.getElementById('queue-body');
+            container.innerHTML = '';
+
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state">No queries in the queue yet.</div>';
+                return;
+            }
+
+            data.forEach(row => {
+                const status = (row.status || '').toLowerCase();
+                const statusClass = status === 'approved' ? 'badge-success' :
+                                     status === 'rejected' ? 'badge-warning' : 'badge-info';
+                const cardClass = status === 'approved' ? 'is-approved' :
+                                   status === 'rejected' ? 'is-rejected' : 'is-promoted';
+
+                let actionButton = '';
+                if (row.status === 'Approved') {
+                    actionButton = CAN_PROMOTE
+                        ? `<button class="btn btn-primary btn-sm" onclick="promoteQuery(${row.id})">Promote to catalog</button>`
+                        : `<span class="blocked-tag">Awaiting admin promotion</span>`;
+                } else if (row.status === 'Promoted') {
+                    actionButton = `<button class="btn btn-secondary btn-sm" disabled>Promoted</button>`;
+                } else {
+                    actionButton = `<span class="blocked-tag">Blocked by fence</span>`;
+                }
+
+                const card = document.createElement('div');
+                card.className = `card row-card ${cardClass}`;
+                card.innerHTML = `
+                    <div class="col-id">#${row.id}</div>
+                    <div class="col-question">
+                        <span class="who">${escapeHtml(row.role_name || 'user')}${row.donor_id != null ? escapeHtml(':' + row.donor_id) : ''}</span>
+                        ${escapeHtml(row.question)}
+                    </div>
+                    <div>
+                        ${row.sql ? `<div class="code-block"><pre style="padding:10px 12px; font-size:0.74rem;">${escapeHtml(row.sql)}</pre></div>` : '<span class="blocked-tag">N/A</span>'}
+                    </div>
+                    <div class="col-status">
+                        <span class="badge ${statusClass}">${escapeHtml(row.status)}</span>
+                        ${row.details ? `<span class="status-detail">${escapeHtml(row.details)}</span>` : ''}
+                    </div>
+                    <div class="col-action">${actionButton}</div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        async function promoteQuery(id) {
+            if (!confirm("Promote this query to the permanent catalog?")) return;
+            const response = await apiFetch(`/api/promote/${id}`, { method: 'POST' });
+            if (response.ok) {
+                toast('Promoted to catalog', 'success');
+                fetchQueue();
+            } else {
+                toast('Failed to promote query', 'error');
+            }
+        }
+
+        const clearCacheBtn = document.getElementById('clear-cache-btn');
+        if (clearCacheBtn) {
+            clearCacheBtn.addEventListener('click', async () => {
+                if (!confirm("Clear the entire question cache? Every previously-asked question will be re-run against the database next time it's asked.")) return;
+                const response = await apiFetch('/api/clear-cache', { method: 'POST' });
+                toast(response.ok ? 'Cache cleared' : 'Failed to clear cache', response.ok ? 'success' : 'error');
+            });
+        }
+
+        async function fetchUsers() {
+            const response = await apiFetch('/api/users');
+            const users = await response.json();
+            document.getElementById('users-list').innerHTML = users.map(u =>
+                `<span class="user-chip"><strong>${escapeHtml(u.username)}</strong> — ${escapeHtml(u.role)}${u.donor_id != null ? ' (donor #' + escapeHtml(String(u.donor_id)) + ')' : ''}</span>`
+            ).join('');
+        }
+
+        const roleSelect = document.getElementById('role-select');
+        if (roleSelect) {
+            roleSelect.addEventListener('change', (e) => {
+                document.getElementById('donor-id-field').style.display = e.target.value === 'donor' ? 'block' : 'none';
+            });
+        }
+
+        const createUserForm = document.getElementById('create-user-form');
+        if (createUserForm) {
+            createUserForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const form = e.target;
+                const payload = {
+                    username: form.username.value.trim(),
+                    password: form.password.value,
+                    role: form.role.value,
+                    donor_id: form.role.value === 'donor' ? form.donor_id.value : null,
+                };
+                const msg = document.getElementById('create-user-message');
+                msg.textContent = 'Creating…';
+                msg.style.color = 'var(--text-secondary)';
+                const response = await apiFetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    msg.textContent = result.message;
+                    msg.style.color = 'var(--success)';
+                    toast(result.message, 'success');
+                    form.reset();
+                    fetchUsers();
+                } else {
+                    msg.textContent = result.message || 'Failed to create user.';
+                    msg.style.color = 'var(--danger)';
+                    toast(result.message || 'Failed to create user', 'error');
+                }
+            });
+            fetchUsers();
+        }
+
+        fetchQueue();
+    </script>
+</body>
+</html>

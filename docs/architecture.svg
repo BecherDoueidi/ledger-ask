@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1150 1180" font-family="Arial, Helvetica, sans-serif">
+  <defs>
+    <marker id="arrowInk" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#16243D"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2F6B4F"/>
+    </marker>
+    <marker id="arrowGrey" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#9AA3B2"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1150" height="1180" fill="#FFFFFF"/>
+
+  <!-- Title -->
+  <text x="575" y="34" text-anchor="middle" font-size="24" font-weight="700" fill="#16243D">Ledger·Ask — Request Resolution Architecture</text>
+  <text x="575" y="56" text-anchor="middle" font-size="14" fill="#4B5265">Cheapest-to-most-expensive resolution pipeline, with security enforced on every path that touches the database</text>
+
+  <!-- 0. Browser/User -->
+  <rect x="375" y="80" width="250" height="55" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="113" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Browser / User</text>
+  <line x1="500" y1="135" x2="500" y2="168" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+
+  <!-- 1. Flask Auth -->
+  <rect x="230" y="170" width="540" height="72" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="200" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Flask App — Session Auth + Input Security Fence</text>
+  <text x="500" y="222" text-anchor="middle" font-size="12.5" fill="#4B5265">Role resolved server-side: viewer / analyst / admin / donor (never trusts client-claimed role)</text>
+  <line x1="500" y1="242" x2="500" y2="272" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+
+  <!-- 2. Follow-up Detection -->
+  <rect x="260" y="274" width="480" height="64" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="300" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Follow-up Detection</text>
+  <text x="500" y="320" text-anchor="middle" font-size="12.5" fill="#4B5265">Active conversation + referential wording ("sort them," "chart it")?</text>
+  <!-- shortcut -->
+  <line x1="740" y1="306" x2="815" y2="306" stroke="#2F6B4F" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <text x="822" y="298" font-size="12.5" font-weight="700" fill="#2F6B4F">Tier 1: in-memory transform</text>
+  <text x="822" y="314" font-size="12" fill="#4B5265">sort / filter / limit / dedupe —</text>
+  <text x="822" y="329" font-size="12" fill="#4B5265">zero AI cost, zero DB call → Response</text>
+
+  <line x1="500" y1="338" x2="500" y2="368" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+  <text x="512" y="357" font-size="11.5" font-style="italic" fill="#4B5265">not a follow-up (or needs new data)</text>
+
+  <!-- 3. Catalog Match -->
+  <rect x="260" y="370" width="480" height="64" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="396" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Catalog Match (admin-promoted)</text>
+  <text x="500" y="416" text-anchor="middle" font-size="12.5" fill="#4B5265">Exact question match against pre-vetted catalog.yaml entries</text>
+  <line x1="740" y1="402" x2="815" y2="402" stroke="#2F6B4F" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <text x="822" y="394" font-size="12.5" font-weight="700" fill="#2F6B4F">hit → runs live against DB</text>
+  <text x="822" y="409" font-size="12" fill="#4B5265">fresh data, zero LLM call → Response</text>
+
+  <line x1="500" y1="434" x2="500" y2="464" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+  <text x="540" y="453" font-size="11.5" font-style="italic" fill="#4B5265">miss</text>
+
+  <!-- 4. Cache Lookup -->
+  <rect x="245" y="466" width="510" height="78" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="492" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Cache Lookup — exact + semantic</text>
+  <text x="500" y="512" text-anchor="middle" font-size="12.5" fill="#4B5265">Cosine similarity + entity/content-word guards against false positives</text>
+  <text x="500" y="530" text-anchor="middle" font-size="12.5" fill="#4B5265">Validated against a live schema fingerprint before being trusted</text>
+  <line x1="755" y1="500" x2="815" y2="500" stroke="#2F6B4F" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <text x="822" y="492" font-size="12.5" font-weight="700" fill="#2F6B4F">hit + schema unchanged</text>
+  <text x="822" y="507" font-size="12" fill="#4B5265">→ instant Response, no DB/LLM call</text>
+  <!-- satellite: embeddings -->
+  <rect x="20" y="470" width="195" height="60" rx="8" fill="#F7F8FC" stroke="#9AA3B2" stroke-width="1.3" stroke-dasharray="5,4"/>
+  <text x="117" y="493" text-anchor="middle" font-size="12" font-weight="700" fill="#4B5265">Ollama</text>
+  <text x="117" y="509" text-anchor="middle" font-size="11" fill="#4B5265">nomic-embed-text</text>
+  <text x="117" y="522" text-anchor="middle" font-size="10.5" fill="#4B5265">(embeddings)</text>
+  <line x1="215" y1="500" x2="242" y2="500" stroke="#9AA3B2" stroke-width="1.5" marker-end="url(#arrowGrey)"/>
+
+  <line x1="500" y1="544" x2="500" y2="574" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+  <text x="540" y="563" font-size="11.5" font-style="italic" fill="#4B5265">miss</text>
+
+  <!-- 5. Fresh LLM Generation -->
+  <rect x="230" y="576" width="540" height="80" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="602" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Fresh LLM Generation</text>
+  <text x="500" y="622" text-anchor="middle" font-size="12.5" fill="#4B5265">Schema harvested live from the DB (never cached at startup) → prompt → SQL</text>
+  <text x="500" y="640" text-anchor="middle" font-size="12.5" fill="#4B5265">Also the entry point for a Tier-2 follow-up needing a new JOIN</text>
+  <!-- satellite: LLM -->
+  <rect x="20" y="582" width="195" height="60" rx="8" fill="#F7F8FC" stroke="#9AA3B2" stroke-width="1.3" stroke-dasharray="5,4"/>
+  <text x="117" y="605" text-anchor="middle" font-size="12" font-weight="700" fill="#4B5265">Ollama</text>
+  <text x="117" y="621" text-anchor="middle" font-size="11" fill="#4B5265">qwen2.5-coder:14b</text>
+  <text x="117" y="634" text-anchor="middle" font-size="10.5" fill="#4B5265">(text-to-SQL)</text>
+  <line x1="215" y1="612" x2="235" y2="612" stroke="#9AA3B2" stroke-width="1.5" marker-end="url(#arrowGrey)"/>
+
+  <line x1="500" y1="656" x2="500" y2="686" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+
+  <!-- 6. Security Enforcement -->
+  <rect x="210" y="688" width="580" height="78" rx="8" fill="#FEF3E2" stroke="#B45309" stroke-width="2"/>
+  <text x="500" y="716" text-anchor="middle" font-size="15.5" font-weight="700" fill="#B45309">Security Enforcement</text>
+  <text x="500" y="736" text-anchor="middle" font-size="12.5" fill="#7A4A16">Table allowlist + automatic row-level filter rewrite (WHERE DonorId = ...)</text>
+  <text x="500" y="753" text-anchor="middle" font-size="12" font-style="italic" fill="#7A4A16">Applied here — never trusts what the LLM produced</text>
+  <line x1="500" y1="766" x2="500" y2="796" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+
+  <!-- 7. Database Execution -->
+  <rect x="250" y="798" width="500" height="70" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="826" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Database Execution</text>
+  <text x="500" y="846" text-anchor="middle" font-size="12.5" fill="#4B5265">MySQL by default; any SQLAlchemy engine via DATABASE_URL</text>
+  <text x="500" y="861" text-anchor="middle" font-size="11.5" fill="#4B5265">Self-healing retry loop re-prompts the model on schema errors</text>
+  <line x1="500" y1="868" x2="500" y2="898" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+
+  <!-- 8. Chart + Response -->
+  <rect x="290" y="900" width="420" height="62" rx="8" fill="#EEF0FF" stroke="#16243D" stroke-width="1.5"/>
+  <text x="500" y="927" text-anchor="middle" font-size="15" font-weight="700" fill="#16243D">Chart Recommendation → Response</text>
+  <text x="500" y="946" text-anchor="middle" font-size="12" fill="#4B5265">Rule-based chart-type selection, then JSON back to the browser</text>
+
+  <!-- Persistent state band -->
+  <rect x="120" y="1010" width="910" height="90" rx="8" fill="#F7F8FC" stroke="#9AA3B2" stroke-width="1.3" stroke-dasharray="5,4"/>
+  <text x="575" y="1036" text-anchor="middle" font-size="13.5" font-weight="700" fill="#4B5265">Persistent Local State (SQLite — separate from the MySQL business database)</text>
+  <text x="575" y="1058" text-anchor="middle" font-size="12" fill="#4B5265">query_cache.db · conversation_state.db · query_analytics.db · staging_queue.db · users.db</text>
+  <text x="575" y="1078" text-anchor="middle" font-size="11" font-style="italic" fill="#4B5265">Read/written throughout the pipeline above — never the business data itself</text>
+
+  <!-- Legend -->
+  <g font-size="12" fill="#4B5265">
+    <line x1="140" y1="1140" x2="170" y2="1140" stroke="#16243D" stroke-width="2" marker-end="url(#arrowInk)"/>
+    <text x="178" y="1144">Main request flow</text>
+
+    <line x1="330" y1="1140" x2="360" y2="1140" stroke="#2F6B4F" stroke-width="2" marker-end="url(#arrowGreen)"/>
+    <text x="368" y="1144">Fast-path shortcut (no LLM call)</text>
+
+    <rect x="590" y="1131" width="18" height="18" fill="#FEF3E2" stroke="#B45309" stroke-width="1.5"/>
+    <text x="616" y="1144">Security gate — always enforced</text>
+
+    <rect x="850" y="1131" width="18" height="18" fill="#F7F8FC" stroke="#9AA3B2" stroke-width="1.3" stroke-dasharray="4,3"/>
+    <text x="876" y="1144">External service / local state</text>
+  </g>
+</svg>

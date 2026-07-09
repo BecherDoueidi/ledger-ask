@@ -18,6 +18,22 @@ This is a University of Sharjah "Summer 2026 Training" internship project (Compa
 - **Automatic chart recommendation** — rule-based, extensible chart-type selection from result-set shape, with a manual override switcher in the UI.
 - **218 passing tests** (pytest) — unit coverage for every core module plus full end-to-end integration tests, including a test that proves row-level security actually holds through the whole request pipeline.
 
+## Demo
+
+**Ask a plain-English question and get results, SQL, and an auto-recommended chart in one shot:**
+
+![Chart result](docs/screenshots/chart-result.png)
+
+The badge above the SQL shows this answer was served from cache instantly (no LLM call) — the same question was asked once before. The chart type (Bar/Line/Pie) can be switched manually without re-asking anything.
+
+**Dashboard, before asking anything:**
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+## Architecture Diagram
+
+![Architecture diagram](docs/architecture.svg)
+
 ## Quickstart
 
 ```bash

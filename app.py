@@ -100,9 +100,14 @@ def capability_required(capability):
             return view(*args, **kwargs)
         return wrapped
     return decorator
-# Hijack the OpenAI client to point to your local Ollama daemon
+# Hijack the OpenAI client to point to your local Ollama daemon.
+# Configurable via OLLAMA_BASE_URL: "localhost" only resolves to the host
+# machine when this process itself runs on the host -- inside a Docker
+# container, "localhost" is the container, not the host, so the compose
+# setup overrides this to http://host.docker.internal:11434/v1 instead.
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 client = OpenAI(
-    base_url="http://localhost:11434/v1",
+    base_url=OLLAMA_BASE_URL,
     api_key="local-bypass" # The library requires a string here, but Ollama ignores it
 )
 

@@ -3,6 +3,7 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Flask](https://img.shields.io/badge/flask-3-black)
 [![Tests](https://github.com/BecherDoueidi/ledger-ask/actions/workflows/tests.yml/badge.svg)](https://github.com/BecherDoueidi/ledger-ask/actions/workflows/tests.yml)
+![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
 
 A Flask middleware that translates natural-language questions into governed SQL against a MySQL business database, built for a UAE charity's internal reporting use case. The system prioritizes **correctness and safety over raw speed**: every query passes through role-based access control before generation and a table-allowlist + row-level filter rewrite after generation, regardless of what the LLM produces. A three-tier resolution pipeline (deterministic catalog match → in-memory transform → LLM generation) is used to avoid unnecessary model calls wherever a cheaper, deterministic path can answer correctly.
@@ -53,6 +54,22 @@ python app.py                  # serves on http://127.0.0.1:5000
 
 Default seeded accounts (change before deploying anywhere real): `admin` / `admin123`, `analyst1` / `analyst123`, `viewer1` / `viewer123`, `donor1` / `donor123`.
 
+### Run with Docker instead
+
+No local Python, MySQL, or manual DB seeding needed — `docker-compose.yml` builds the app and stands up a MySQL container auto-seeded from `DemoDB_mysql.sql` on first run:
+
+```bash
+git clone https://github.com/<your-username>/ledger-ask.git
+cd ledger-ask/project
+cp .env.example .env           # fill in a SECRET_KEY at minimum; DB_PASSWORD doubles as
+                                # the MySQL root password inside the compose stack
+docker compose up --build      # http://localhost:5000, MySQL seeded automatically
+```
+
+Ollama still runs on your **host machine**, not in a container — LLM models are multi-GB and often GPU-accelerated, a poor fit for a lightweight demo stack. The app container reaches it via `host.docker.internal:11434` automatically (works out of the box on Docker Desktop for Windows/Mac; native Linux Docker Engine needs the `extra_hosts` mapping already set in `docker-compose.yml`, no changes needed).
+
+To run just the container image standalone (e.g. against an external MySQL), see `Dockerfile` — it reads the same `DB_*`/`DATABASE_URL`/`OLLAMA_BASE_URL`/`SECRET_KEY`/`PORT` environment variables as a bare-metal run.
+
 Run the test suite with `pytest` from the `project/` directory — it's fully hermetic (no live Ollama or MySQL required).
 
 ---
@@ -73,6 +90,7 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 - **Templates**: Flask/Jinja — `templates/login.html`, `templates/index.html` (main dashboard), `templates/admin.html` (staging queue / promotion UI).
 - **Testing**: pytest, 218 tests across 15 files in `tests/`. Fixtures in `tests/conftest.py` isolate all SQLite stores to `tmp_path`, fake the LLM, and stand up a temporary SQLite database in place of MySQL for integration tests.
 - **Config/secrets**: `.env` (gitignored), `.env.example` as the template. `catalog.yaml` holds deterministic promoted-query manifests.
+- **Containerization**: `Dockerfile` (gunicorn-served app image) + `docker-compose.yml` (app + auto-seeded MySQL; Ollama stays on the host — see Quickstart above).
 
 ---
 

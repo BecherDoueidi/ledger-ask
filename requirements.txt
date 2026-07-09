@@ -5,6 +5,13 @@ pymysql
 python-dotenv
 pyyaml
 
+# Production WSGI server -- used by the Docker image (see Dockerfile);
+# `python app.py` still uses Flask's own dev server for local development.
+# Marker skips it on Windows, where gunicorn doesn't install (it depends
+# on the Unix-only fcntl module) -- the Docker image is always Linux
+# regardless of the host OS it's built on, so this still installs there.
+gunicorn; platform_system != "Windows"
+
 # test-only, not needed to run the app itself
 pytest
 requests

@@ -1,0 +1,50 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${DB_NAME:-CharityAIAgentFullDemoDB}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # MySQL only runs *.sql files in docker-entrypoint-initdb.d against a
+      # brand-new (empty) data directory -- never on a restart against an
+      # existing volume -- so this seeds the demo schema + sample data
+      # exactly once, on first `docker compose up`.
+      - ./DemoDB_mysql.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_PASSWORD:-changeme}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      DB_NAME: ${DB_NAME:-CharityAIAgentFullDemoDB}
+      SECRET_KEY: ${SECRET_KEY:-}
+      # Ollama runs on the HOST machine, not in this compose stack -- LLM
+      # models are multi-GB and often GPU-accelerated, a poor fit for
+      # bundling into a lightweight demo stack. host.docker.internal
+      # reaches the host from inside a container on Docker Desktop
+      # (Windows/Mac) automatically; extra_hosts below makes the same
+      # hostname resolve on native Linux Docker Engine too.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      PORT: 5000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "5000:5000"
+
+volumes:
+  mysql_data:

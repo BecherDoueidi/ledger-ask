@@ -20,8 +20,10 @@ from openai import OpenAI
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 
+# Same override as app.py's client -- see that module for why "localhost"
+# isn't safe to hardcode once this runs inside a container.
 _client = OpenAI(
-    base_url="http://localhost:11434/v1",
+    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
     api_key="local-bypass",
 )
 

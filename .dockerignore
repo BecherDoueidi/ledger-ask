@@ -1,0 +1,23 @@
+# Local dev environment -- the container installs its own deps
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets and local runtime state -- never baked into an image
+.env
+*.db
+*.sqlite
+*.sqlite3
+
+# Not needed inside the app container (DemoDB_mysql.sql is mounted
+# straight into the MySQL container instead -- see docker-compose.yml)
+DemoDB_mysql.sql
+docs/
+tests/
+
+# VCS / editor / tooling
+.git/
+.gitignore
+.claude/
+node_modules/

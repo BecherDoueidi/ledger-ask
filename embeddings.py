@@ -15,8 +15,11 @@ doesn't expose the embeddings endpoint at all, and the cache must not
 regress into an error just because a nice-to-have is missing.
 """
 
+import logging
 import os
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 
@@ -45,10 +48,11 @@ def get_embedding(text):
         return response.data[0].embedding
     except Exception as e:
         if not _warned_unavailable:
-            print(
-                f"[embeddings] Semantic cache disabled -- embedding call failed "
-                f"({e}). Falling back to exact-match caching only. To enable "
-                f"semantic matching, run: ollama pull {EMBEDDING_MODEL}"
+            logger.warning(
+                "Semantic cache disabled -- embedding call failed; falling back to "
+                "exact-match caching only. To enable semantic matching, run: "
+                f"ollama pull {EMBEDDING_MODEL}",
+                extra={"embedding_model": EMBEDDING_MODEL, "error": str(e)},
             )
             _warned_unavailable = True
         return None

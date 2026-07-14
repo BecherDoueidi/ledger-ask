@@ -41,6 +41,20 @@
             letter-spacing: 0.04em; color: var(--text-tertiary); margin-bottom: 4px;
         }
         .create-user-form .field input, .create-user-form .field select { font-size: 0.85rem; padding: 8px 10px; }
+        .stat-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px; margin-bottom: 16px;
+        }
+        .stat-tile { padding: 14px 16px; }
+        .stat-tile .stat-label {
+            font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.04em; color: var(--text-tertiary); margin-bottom: 6px;
+        }
+        .stat-tile .stat-value { font-size: 1.5rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .breakdown-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        .breakdown-table th, .breakdown-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+        .breakdown-table th { color: var(--text-tertiary); font-weight: 700; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.04em; }
+        .breakdown-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
         @media (max-width: 800px) {
             .row-card { grid-template-columns: 1fr; }
             .col-action { justify-content: flex-start; }
@@ -64,6 +78,38 @@
     </div>
 
     <div class="page-container wide">
+        <h2>System health</h2>
+        <div id="analytics-section">
+            <div class="stat-grid" id="stat-grid">
+                <div class="card stat-tile"><div class="stat-label">Total requests</div><div class="stat-value" id="stat-total">—</div></div>
+                <div class="card stat-tile"><div class="stat-label">Cache hit rate</div><div class="stat-value" id="stat-cache-rate">—</div></div>
+                <div class="card stat-tile"><div class="stat-label">Success rate</div><div class="stat-value" id="stat-success-rate">—</div></div>
+                <div class="card stat-tile"><div class="stat-label">Avg latency</div><div class="stat-value" id="stat-avg-ms">—</div></div>
+                <div class="card stat-tile"><div class="stat-label">p95 latency</div><div class="stat-value" id="stat-p95-ms">—</div></div>
+                <div class="card stat-tile"><div class="stat-label">Avg retries</div><div class="stat-value" id="stat-retries">—</div></div>
+            </div>
+            <div class="breakdown-tables">
+                <div class="card" style="padding: 14px 16px;">
+                    <div class="stat-label" style="margin-bottom:8px;">By resolution path</div>
+                    <table class="breakdown-table"><thead><tr><th>Path</th><th>Count</th><th>Avg ms</th></tr></thead><tbody id="by-path-body"></tbody></table>
+                </div>
+                <div class="card" style="padding: 14px 16px;">
+                    <div class="stat-label" style="margin-bottom:8px;">Top failure reasons</div>
+                    <table class="breakdown-table"><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="by-failure-body"></tbody></table>
+                </div>
+            </div>
+        </div>
+
+        {% if can_promote_to_catalog %}
+        <h2>Catalog approvals</h2>
+        <div class="card" style="padding: 14px 16px;">
+            <table class="breakdown-table" style="width:100%;">
+                <thead><tr><th>Intent</th><th>Version</th><th>Status</th><th>Promoted by</th><th></th></tr></thead>
+                <tbody id="catalog-body"></tbody>
+            </table>
+        </div>
+        {% endif %}
+
         {% if can_manage_users %}
         <h2>User accounts</h2>
         <div class="card" style="padding: 18px 20px;">
@@ -231,6 +277,68 @@
             fetchUsers();
         }
 
+        async function fetchAnalyticsSummary() {
+            const response = await apiFetch('/api/analytics/summary');
+            if (!response.ok) return;
+            const s = await response.json();
+
+            document.getElementById('stat-total').textContent = s.total_requests;
+            document.getElementById('stat-cache-rate').textContent = Math.round(s.cache_hit_rate * 100) + '%';
+            document.getElementById('stat-success-rate').textContent = Math.round(s.success_rate * 100) + '%';
+            document.getElementById('stat-avg-ms').textContent = s.avg_total_ms != null ? Math.round(s.avg_total_ms) + 'ms' : '—';
+            document.getElementById('stat-p95-ms').textContent = s.p95_total_ms != null ? Math.round(s.p95_total_ms) + 'ms' : '—';
+            document.getElementById('stat-retries').textContent = s.avg_retries;
+
+            const byPathBody = document.getElementById('by-path-body');
+            byPathBody.innerHTML = (s.by_path || []).map(row =>
+                `<tr><td>${escapeHtml(row.path)}</td><td>${row.count}</td><td>${row.avg_ms != null ? Math.round(row.avg_ms) : '—'}</td></tr>`
+            ).join('') || '<tr><td colspan="3" class="blocked-tag">No requests logged yet.</td></tr>';
+
+            const byFailureBody = document.getElementById('by-failure-body');
+            byFailureBody.innerHTML = (s.top_failure_reasons || []).map(row =>
+                `<tr><td>${escapeHtml(row.reason)}</td><td>${row.count}</td></tr>`
+            ).join('') || '<tr><td colspan="2" class="blocked-tag">No failures logged.</td></tr>';
+        }
+
+        async function fetchCatalog() {
+            const catalogBody = document.getElementById('catalog-body');
+            if (!catalogBody) return;
+            const response = await apiFetch('/api/catalog');
+            const entries = await response.json();
+            if (!entries || entries.length === 0) {
+                catalogBody.innerHTML = '<tr><td colspan="5" class="blocked-tag">No catalog entries yet.</td></tr>';
+                return;
+            }
+            const statusClass = { active: 'badge-success', pending: 'badge-info', rejected: 'badge-warning', superseded: 'badge-neutral' };
+            catalogBody.innerHTML = entries.map(e => `
+                <tr>
+                    <td>${escapeHtml(e.intent)}</td>
+                    <td>v${e.version}</td>
+                    <td><span class="badge ${statusClass[e.status] || 'badge-neutral'}">${escapeHtml(e.status)}</span></td>
+                    <td>${escapeHtml(e.promoted_by || '—')}</td>
+                    <td>${e.status === 'pending'
+                        ? `<button class="btn btn-primary btn-sm" onclick="approveCatalogEntry(${e.id})">Approve</button>
+                           <button class="btn btn-danger-ghost btn-sm" onclick="rejectCatalogEntry(${e.id})">Reject</button>`
+                        : ''}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function approveCatalogEntry(id) {
+            if (!confirm("Approve this catalog entry? It will start answering matching questions instantly for every user, with no further review.")) return;
+            const response = await apiFetch(`/api/catalog/${id}/approve`, { method: 'POST' });
+            toast(response.ok ? 'Catalog entry approved' : 'Failed to approve', response.ok ? 'success' : 'error');
+            fetchCatalog();
+        }
+
+        async function rejectCatalogEntry(id) {
+            const response = await apiFetch(`/api/catalog/${id}/reject`, { method: 'POST' });
+            toast(response.ok ? 'Catalog entry rejected' : 'Failed to reject', response.ok ? 'success' : 'error');
+            fetchCatalog();
+        }
+
+        fetchAnalyticsSummary();
+        fetchCatalog();
         fetchQueue();
     </script>
 </body>

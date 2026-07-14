@@ -88,8 +88,9 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 - **Application-state storage**: SQLite, one file per concern (not the business data) — `query_cache.db`, `conversation_state.db`, `query_analytics.db`, `staging_queue.db`, `users.db`. Kept separate from the MySQL business DB by design.
 - **Frontend**: vanilla JS/CSS, no framework. `static/js/app.js` (data table, chart rendering, conversation transcript UI), `static/js/common.js`, `static/css/style.css` (light/dark theme via CSS custom properties + `data-theme` attribute). Charts via Chart.js.
 - **Templates**: Flask/Jinja — `templates/login.html`, `templates/index.html` (main dashboard), `templates/admin.html` (staging queue / promotion UI).
-- **Testing**: pytest, 218 tests across 15 files in `tests/`. Fixtures in `tests/conftest.py` isolate all SQLite stores to `tmp_path`, fake the LLM, and stand up a temporary SQLite database in place of MySQL for integration tests.
-- **Config/secrets**: `.env` (gitignored), `.env.example` as the template. `catalog.yaml` holds deterministic promoted-query manifests.
+- **Testing**: pytest, 234 tests across 17 files in `tests/`. Fixtures in `tests/conftest.py` isolate all SQLite stores to `tmp_path`, fake the LLM, and stand up a temporary SQLite database in place of MySQL for integration tests.
+- **Observability**: `logging_config.py` configures structured logging (text or JSON, via `LOG_FORMAT`) for every module; `query_analytics.py` is a complete per-request audit log (role, path taken, latency breakdown, success/failure) queryable via `/api/analytics/summary` (now including p50/p95 latency and a per-role breakdown) and `/api/analytics/recent`, surfaced as a live dashboard in the admin panel (visible to analyst and admin tiers, same `can_view_admin_panel` gate as the rest of the panel).
+- **Config/secrets**: `.env` (gitignored), `.env.example` as the template. `catalog.db` (SQLite) holds the versioned, approval-gated promoted-query registry — see `catalog_manager.py`. A legacy `catalog.yaml`, if present, is migrated in automatically on first use.
 - **Containerization**: `Dockerfile` (gunicorn-served app image) + `docker-compose.yml` (app + auto-seeded MySQL; Ollama stays on the host — see Quickstart above).
 
 ---
@@ -97,7 +98,7 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 ## Current System State (What Works)
 
 **Query resolution pipeline** (cost-ordered, cheapest-first):
-1. **Catalog match** (`catalog_manager.py`) — exact/promoted questions in `catalog.yaml` bypass the LLM entirely.
+1. **Catalog match** (`catalog_manager.py`) — exact/promoted, **approved** questions bypass the LLM entirely, executed live against the DB. SQLite-backed and versioned: promoting a staging-queue entry only stages it as `pending` (zero effect on live traffic); a separate `approve_entry()` call activates it, superseding whichever version was previously active for that same question. See `templates/admin.html`'s "Catalog approvals" section.
 2. **Semantic + exact cache** (`query_cache.py`, `semantic_match.py`, `embeddings.py`) — hybrid cache keyed on exact string match first, then cosine similarity over Ollama embeddings for paraphrases. Guarded against false-positive matches by an entity signature check (numbers/dates/quarters/relative-time terms) and a content-word Jaccard overlap check, calibrated to `SIMILARITY_THRESHOLD=0.80` and `CONTENT_OVERLAP_THRESHOLD=0.5`.
 3. **Follow-up resolution** (`followup_resolver.py`) — for multi-turn conversation, a three-tier cost-ordered resolver: Tier 1 applies deterministic in-memory transforms (sort, filter, limit, dedupe, column-select) to the previous result set with zero AI cost; Tier 2 escalates to LLM-assisted SQL modification (reusing the full security/retry pipeline) only when new data (e.g. a new join) is required; anything else falls through to a fresh question.
 4. **Fresh LLM generation** — schema is dynamically harvested (`schema_harvester.py`) and injected into the prompt; the model generates SQL against that live schema.
@@ -135,14 +136,26 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 
 **Frontend:**
 - Analytics-dashboard-style UI: scrollable conversation transcript, sortable/searchable/paginated result tables, one-click SQL copy, CSV/JSON export, toast notifications, loading-skeleton states, light/dark theme toggle, responsive layout.
-- Admin dashboard (`templates/admin.html`) for reviewing and promoting staged queries into `catalog.yaml`.
+- Admin dashboard (`templates/admin.html`) for reviewing and promoting staged queries, and separately approving/rejecting pending catalog entries before they go live.
 
-**Testing (218 tests, pytest):**
-- Unit coverage for every pure-logic module (`chart_advisor`, `semantic_match`, `followup_resolver`, `catalog_manager`, `query_cache`, `conversation_state`, `query_analytics`, `staging_queue`, `access_control`, `auth`, `roles_config`, `schema_harvester`).
+**Testing (249 tests, pytest):**
+- Unit coverage for every pure-logic module (`chart_advisor`, `semantic_match`, `followup_resolver`, `catalog_manager`, `query_cache`, `conversation_state`, `query_analytics`, `staging_queue`, `access_control`, `auth`, `roles_config`, `schema_harvester`, `sql_safety`, `prompt_builder`, `logging_config`).
 - Integration tests (`test_app_integration.py`) drive the full `/api/generate-sql` pipeline via the Flask test client against a fake LLM and a temporary SQLite database standing in for MySQL — including an end-to-end test proving row-level security is actually enforced through the whole stack, not just in isolated unit tests.
 - `TestRoleTiers` pins down the viewer/analyst/admin capability boundary: which routes each tier can and can't reach, and that catalog-promotion eligibility follows row-restriction status rather than role name.
 - `TestDatabaseSchemaChange` proves the database-portability behavior end-to-end: a cached answer is confirmed to hit normally, the test database's schema is altered mid-test (`ALTER TABLE ... ADD COLUMN`), and the same question is confirmed to NOT replay the stale cached answer — plus a table-rename test confirming a donor's row-scoped table list adapts without any config change.
+- `TestCatalogApprovalWorkflow` proves a promoted catalog entry does NOT answer live traffic until explicitly approved, and that a non-admin tier can't approve one.
 - All state-bearing modules are redirected to `tmp_path` via autouse fixtures in `conftest.py`; embeddings default to `None` in tests (`no_real_embeddings` fixture) so tests never depend on a live Ollama instance.
+
+**Benchmarks** (`benchmarks/run_benchmarks.py`, run with `python benchmarks/run_benchmarks.py`): a standalone, hermetic script (temp SQLite DB, faked LLM — same isolation approach as the test suite) measuring wall-clock latency per resolution path over 50 iterations each. Real numbers from a local run:
+
+| Path | mean | p50 | p95 |
+|---|---|---|---|
+| Fresh LLM generation (pipeline overhead only) | 24.95ms | 24.09ms | 27.17ms |
+| Exact cache hit | 18.51ms | 18.52ms | 20.93ms |
+| Catalog hit | 20.00ms | 19.12ms | 25.79ms |
+| In-memory follow-up transform | 12.12ms | 11.70ms | 14.66ms |
+
+"Fresh LLM generation" fakes the model call to return instantly, so it isolates this codebase's own overhead (schema harvest, prompt building, security checks, DB execution) — real Ollama inference time is external, non-deterministic, and hardware-dependent, and deliberately excluded so this project isn't claiming credit (or blame) for a number it doesn't control.
 
 ---
 

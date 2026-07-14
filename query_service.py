@@ -9,6 +9,8 @@ Every function here returns (response_dict, status_code) rather than
 calling jsonify() directly, so this module has zero Flask dependency.
 """
 
+import logging
+
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -32,6 +34,8 @@ from sql_safety import (
     build_unknown_column_hint,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _db_connection_error_response(db_error, user_query, role_name, donor_id, timer):
     """
@@ -44,7 +48,10 @@ def _db_connection_error_response(db_error, user_query, role_name, donor_id, tim
     identical to the caller.
     """
     error_detail = str(db_error._message()) if hasattr(db_error, '_message') else str(db_error)
-    print(f"\n--- DATABASE CONNECTION/QUERY FAILURE ---\n{error_detail}\n----------------------------\n")
+    logger.error(
+        "Database connection/query failure",
+        extra={"role": role_name, "donor_id": donor_id, "db_error": error_detail},
+    )
     query_analytics.log_query(
         user_query, role_name, donor_id, path="error", success=False, timer=timer,
         failure_reason=f"DB connection error: {error_detail[:280]}",
@@ -288,7 +295,10 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
         # and falls through to a fresh LLM+DB round trip, exactly as if
         # this had been a cache miss all along.
         if cached and cached["schema_fingerprint"] not in (None, schema_fingerprint):
-            print("[Cache] Invalidating entry stale against current schema (fingerprint changed)")
+            logger.info(
+                "Cache entry invalidated: schema fingerprint changed",
+                extra={"role": role_name, "donor_id": donor_id, "cache_key": cached["cache_key"]},
+            )
             query_cache.invalidate_by_key(cached["cache_key"])
             cached = None
         if cached:
@@ -296,7 +306,10 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
                 cached["generated_sql"], allowed_tables
             )
             if not table_access_ok:
-                print(f"[Cache] Invalidating stale entry referencing disallowed tables: {disallowed_tables}")
+                logger.warning(
+                    "Cache entry invalidated: references disallowed tables",
+                    extra={"role": role_name, "donor_id": donor_id, "disallowed_tables": sorted(disallowed_tables)},
+                )
                 query_cache.invalidate_by_key(cached["cache_key"])
                 staging_queue.log_entry(
                     user_query, role_name, donor_id, cached["generated_sql"], "Blocked",
@@ -371,8 +384,10 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
             # any trailing semicolon.
             current_sql = strip_markdown_fence(current_sql).rstrip(';')
 
-            # Logging
-            print(f"\n[Attempt {attempt}] AI Generated: {current_sql}")
+            logger.info(
+                "LLM generated SQL",
+                extra={"role": role_name, "donor_id": donor_id, "attempt": attempt, "sql": current_sql},
+            )
 
             # 5a2. Non-SQL Output Guard -- if the model responded
             # conversationally instead of generating SQL (e.g. the user
@@ -382,7 +397,10 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
             # which would otherwise pressure the model into hallucinating
             # a syntactically-valid but meaningless query just to comply.
             if not looks_like_sql(current_sql):
-                print(f"[Attempt {attempt}] NON-SQL OUTPUT -- short-circuiting, not entering self-healing loop")
+                logger.warning(
+                    "LLM produced non-SQL output; short-circuiting instead of entering self-healing loop",
+                    extra={"role": role_name, "donor_id": donor_id, "attempt": attempt},
+                )
                 staging_queue.log_entry(
                     user_query, role_name, donor_id, current_sql, "Rejected",
                     "LLM produced non-SQL/conversational output instead of a query"
@@ -401,7 +419,10 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
 
             # 5b. Run Security Fence
             if violates_security_matrix(current_sql):
-                print(f"[Attempt {attempt}] BLOCKED BY SECURITY MATRIX")
+                logger.warning(
+                    "Generated SQL blocked by output security fence",
+                    extra={"role": role_name, "donor_id": donor_id, "attempt": attempt, "sql": current_sql},
+                )
                 staging_queue.log_entry(user_query, role_name, donor_id, current_sql, "Blocked", "Blocked by output security fence")
                 query_analytics.log_query(
                     user_query, role_name, donor_id, path="blocked", success=False, timer=timer,
@@ -420,7 +441,10 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
             # enforcement boundary, not the schema-hiding above.
             table_access_ok, disallowed_tables = access_control.check_table_access(current_sql, allowed_tables)
             if not table_access_ok:
-                print(f"[Attempt {attempt}] ACCESS DENIED -- disallowed tables: {disallowed_tables}")
+                logger.warning(
+                    "Access denied: generated SQL references disallowed tables",
+                    extra={"role": role_name, "donor_id": donor_id, "attempt": attempt, "disallowed_tables": sorted(disallowed_tables)},
+                )
                 staging_queue.log_entry(
                     user_query, role_name, donor_id, current_sql, "Blocked",
                     f"Access denied: role '{role_name}' cannot query {disallowed_tables}"
@@ -523,9 +547,13 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
             # 5d. Catch Database Execution Errors
             except SQLAlchemyError as db_error:
                 error_msg = str(db_error._message()) if hasattr(db_error, '_message') else str(db_error)
-                print(f"\n--- EXECUTION FAILED (Attempt {attempt + 1}) ---")
-                print(f"Failed SQL: {execution_sql}")
-                print(f"DB Error: {error_msg}")
+                logger.warning(
+                    "SQL execution failed",
+                    extra={
+                        "role": role_name, "donor_id": donor_id, "attempt": attempt,
+                        "sql": execution_sql, "db_error": error_msg,
+                    },
+                )
 
                 # If retry limit hit, fail safely
                 if attempt == max_retries:
@@ -543,10 +571,10 @@ def handle_generate_sql(user_query, role_name, donor_id, conversation_id):
                     }, 500
 
                 # 5e. Re-frame Context
-                print(">>> Triggering AI Self-Healing Prompt...")
+                logger.info("Triggering AI self-healing retry", extra={"role": role_name, "attempt": attempt})
                 specific_hint, bad_column = build_unknown_column_hint(error_msg, current_sql, live_schema)
                 if specific_hint:
-                    print(f">>> Specific correction hint: {specific_hint.strip()}")
+                    logger.debug("Self-healing correction hint", extra={"hint": specific_hint.strip()})
                 if bad_column:
                     forbidden_columns.add(bad_column.lower())
 
@@ -594,7 +622,10 @@ Return ONLY the corrected raw SQL string. Do not include markdown formatting or 
 
     except Exception as e:
         # 6. FATAL ERROR EXPOSURE
-        print(f"\n--- FATAL PIPELINE CRASH ---\n{str(e)}\n----------------------------\n")
+        logger.exception(
+            "Fatal pipeline crash",
+            extra={"role": role_name, "donor_id": donor_id},
+        )
         query_analytics.log_query(
             user_query, role_name, donor_id, path="error", success=False, timer=timer,
             failure_reason=f"Fatal pipeline crash: {str(e)[:280]}",

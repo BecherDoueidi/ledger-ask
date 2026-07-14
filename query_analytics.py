@@ -140,10 +140,27 @@ def log_query(
         conn.close()
 
 
+def _percentile(sorted_values, pct):
+    """
+    Nearest-rank percentile over an already-sorted list of numbers.
+    SQLite has no built-in PERCENTILE_CONT, and this table is sized for
+    a single deployment's request log (thousands-to-low-millions of
+    rows), not a data warehouse -- computing it in Python over a single
+    indexed column fetch is simpler than a window-function workaround
+    and fast enough at that scale. Returns None for an empty list.
+    """
+    if not sorted_values:
+        return None
+    index = min(len(sorted_values) - 1, int(round(pct * (len(sorted_values) - 1))))
+    return sorted_values[index]
+
+
 def get_summary(limit_days=None):
     """
     Aggregate stats for a quick health check: overall + broken down by
-    path, plus the most common failure reasons. Powers GET /api/analytics/summary.
+    path and role, latency percentiles (not just averages -- an average
+    hides the slow tail a p95 catches), plus the most common failure
+    reasons. Powers GET /api/analytics/summary.
     """
     conn = _get_connection()
     try:
@@ -169,6 +186,11 @@ def get_summary(limit_days=None):
             params,
         ).fetchone()
 
+        latency_rows = conn.execute(
+            f"SELECT total_ms FROM query_analytics {where} ORDER BY total_ms", params
+        ).fetchall()
+        latencies = [r[0] for r in latency_rows]
+
         by_path = conn.execute(
             f"""
             SELECT path, COUNT(*) AS count,
@@ -176,6 +198,17 @@ def get_summary(limit_days=None):
                    AVG(total_ms) AS avg_ms
             FROM query_analytics {where}
             GROUP BY path
+            """,
+            params,
+        ).fetchall()
+
+        by_role = conn.execute(
+            f"""
+            SELECT role_name, COUNT(*) AS count,
+                   SUM(success) AS successes,
+                   AVG(total_ms) AS avg_ms
+            FROM query_analytics {where}
+            GROUP BY role_name
             """,
             params,
         ).fetchall()
@@ -203,9 +236,15 @@ def get_summary(limit_days=None):
             "avg_total_ms": round(totals[5], 1) if totals[5] is not None else None,
             "avg_llm_ms": round(totals[6], 1) if totals[6] is not None else None,
             "avg_retries": round(totals[7], 2) if totals[7] is not None else 0,
+            "p50_total_ms": _percentile(latencies, 0.50),
+            "p95_total_ms": _percentile(latencies, 0.95),
             "by_path": [
                 {"path": r[0], "count": r[1], "successes": r[2], "avg_ms": round(r[3], 1) if r[3] else None}
                 for r in by_path
+            ],
+            "by_role": [
+                {"role": r[0], "count": r[1], "successes": r[2], "avg_ms": round(r[3], 1) if r[3] else None}
+                for r in by_role
             ],
             "top_failure_reasons": [
                 {"reason": r[0], "count": r[1]} for r in top_failures

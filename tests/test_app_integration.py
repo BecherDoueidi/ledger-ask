@@ -57,7 +57,8 @@ def test_client_cannot_forge_admin_role_via_request_body(client, fake_llm, busin
 
 def test_catalog_hit_never_calls_the_llm(client, fake_llm):
     import catalog_manager
-    catalog_manager.promote("how many donors", "SELECT COUNT(*) FROM Donors")
+    entry_id = catalog_manager.promote("how many donors", "SELECT COUNT(*) FROM Donors")
+    catalog_manager.approve_entry(entry_id)  # promoting alone is only 'pending' -- must be approved to go live
     login(client, "admin", "admin123")
 
     response = client.post("/api/generate-sql", json={"query": "how many donors"})
@@ -275,6 +276,59 @@ class TestAdminRoutes:
         client.post("/api/generate-sql", json={"query": "how many donors"})
         summary = client.get("/api/analytics/summary").get_json()
         assert summary["total_requests"] >= 1
+
+
+class TestCatalogApprovalWorkflow:
+    """
+    Promoting a staging-queue entry only stages it -- it must NOT start
+    answering live traffic until a separate approval step. This is the
+    real, user-facing behavior change from the old catalog.yaml design
+    (where promote() made an entry live immediately), so it's tested
+    through the actual HTTP endpoints, not just catalog_manager directly.
+    """
+
+    def _promote_and_get_entry_id(self, client, fake_llm):
+        login(client, "admin", "admin123")
+        fake_llm.returns("SELECT COUNT(*) FROM Donors")
+        client.post("/api/generate-sql", json={"query": "how many donors"})
+        queue = client.get("/api/queue").get_json()
+        staging_entry = next(e for e in queue if e["question"] == "how many donors")
+        client.post(f"/api/promote/{staging_entry['id']}")
+        catalog = client.get("/api/catalog").get_json()
+        return next(e for e in catalog if e["intent"] == "how many donors")["id"]
+
+    def test_promoted_entry_is_pending_and_does_not_yet_answer_live_traffic(self, client, fake_llm):
+        self._promote_and_get_entry_id(client, fake_llm)
+        fake_llm.returns("SELECT 999")  # if the catalog wrongly went live, this would prove it by NOT being used
+        response = client.post("/api/generate-sql", json={"query": "how many donors"})
+        # Still served from cache (primed by the priming call above), not
+        # the catalog -- either way, proves the pending entry isn't live.
+        assert response.get_json().get("source") != "catalog"
+
+    def test_approving_makes_the_entry_answer_live_traffic(self, client, fake_llm):
+        entry_id = self._promote_and_get_entry_id(client, fake_llm)
+        response = client.post(f"/api/catalog/{entry_id}/approve")
+        assert response.status_code == 200
+
+        fake_llm.returns("SELECT 999")  # must NOT be called once the catalog entry is live
+        response = client.post("/api/generate-sql", json={"query": "how many donors"})
+        body = response.get_json()
+        assert body["source"] == "catalog"
+        assert body["data"] == [{"COUNT(*)": 2}]
+
+    def test_rejecting_a_pending_entry_keeps_it_off_live_traffic_permanently(self, client, fake_llm):
+        entry_id = self._promote_and_get_entry_id(client, fake_llm)
+        response = client.post(f"/api/catalog/{entry_id}/reject", json={"reason": "not needed"})
+        assert response.status_code == 200
+        # A rejected entry can't later be approved.
+        assert client.post(f"/api/catalog/{entry_id}/approve").status_code == 400
+
+    def test_non_admin_cannot_approve_catalog_entries(self, client, fake_llm):
+        entry_id = self._promote_and_get_entry_id(client, fake_llm)
+        client.post("/logout")
+        login(client, "analyst1", "analyst123")
+        response = client.post(f"/api/catalog/{entry_id}/approve")
+        assert response.status_code == 403
 
 
 class TestRoleTiers:

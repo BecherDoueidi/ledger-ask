@@ -1,6 +1,6 @@
 import sqlite3
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, session
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -24,6 +24,12 @@ def get_queue():
 @admin_api_bp.route('/api/promote/<int:entry_id>', methods=['POST'])
 @capability_required("can_promote_to_catalog")
 def promote_entry(entry_id):
+    """
+    Stages a catalog entry as 'pending' -- see catalog_manager.py's
+    module docstring for why this is a separate step from approving it.
+    Promoting does NOT make the shortcut live; a second call to
+    approve_catalog_entry() below does that.
+    """
     entry = staging_queue.get_entry(entry_id)
     if entry is None:
         return jsonify({"status": "error", "message": "Entry not found."}), 404
@@ -47,9 +53,44 @@ def promote_entry(entry_id):
                         "to the shared catalog -- a donor-scoped answer isn't safe to reuse for everyone."
         }), 400
 
-    catalog_manager.promote(entry["question"], entry["sql"])
+    catalog_manager.promote(entry["question"], entry["sql"], promoted_by=session.get("username"))
     staging_queue.mark_promoted(entry_id)
-    return jsonify({"status": "success", "message": "Promoted to catalog."}), 200
+    return jsonify({"status": "success", "message": "Staged for catalog approval."}), 200
+
+
+@admin_api_bp.route('/api/catalog', methods=['GET'])
+@capability_required("can_view_admin_panel")
+def list_catalog_entries():
+    """Full catalog history (any status), newest first -- powers the admin catalog review UI."""
+    status = request.args.get('status') or None
+    return jsonify(catalog_manager.list_entries(status=status))
+
+
+@admin_api_bp.route('/api/catalog/<int:entry_id>/approve', methods=['POST'])
+@capability_required("can_promote_to_catalog")
+def approve_catalog_entry(entry_id):
+    """
+    The second, separate step that actually makes a staged catalog entry
+    live -- see catalog_manager.py's module docstring for why promoting
+    alone isn't enough. Whoever promoted it can also approve it in this
+    implementation (both actions require the same can_promote_to_catalog
+    capability, i.e. admin-tier); a stricter deployment could compare
+    promoted_by vs. the approving session to require a second reviewer.
+    """
+    ok = catalog_manager.approve_entry(entry_id, approved_by=session.get("username"))
+    if not ok:
+        return jsonify({"status": "error", "message": "Entry not found or not pending approval."}), 400
+    return jsonify({"status": "success", "message": "Catalog entry approved and now live."}), 200
+
+
+@admin_api_bp.route('/api/catalog/<int:entry_id>/reject', methods=['POST'])
+@capability_required("can_promote_to_catalog")
+def reject_catalog_entry(entry_id):
+    data = request.get_json(silent=True) or {}
+    ok = catalog_manager.reject_entry(entry_id, reason=data.get("reason"))
+    if not ok:
+        return jsonify({"status": "error", "message": "Entry not found or not pending approval."}), 400
+    return jsonify({"status": "success", "message": "Catalog entry rejected."}), 200
 
 
 @admin_api_bp.route('/api/clear-cache', methods=['POST'])

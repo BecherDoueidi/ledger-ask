@@ -89,3 +89,32 @@ class TestLogAndSummary:
         for _ in range(5):
             _log("llm", True)
         assert len(qa.get_recent(limit=2)) == 2
+
+
+class TestPercentileLatency:
+    def test_p50_and_p95_present_and_ordered(self):
+        for _ in range(20):
+            _log("llm", True)
+        summary = qa.get_summary()
+        # Real timers vary a little in duration, but p95 can never be
+        # smaller than p50 by definition -- this is the one invariant
+        # that holds regardless of actual timing noise.
+        assert summary["p50_total_ms"] is not None
+        assert summary["p95_total_ms"] is not None
+        assert summary["p95_total_ms"] >= summary["p50_total_ms"]
+
+    def test_empty_log_has_no_percentiles(self):
+        summary = qa.get_summary()
+        assert summary["p50_total_ms"] is None
+        assert summary["p95_total_ms"] is None
+
+
+class TestByRoleBreakdown:
+    def test_breaks_down_by_role(self):
+        timer = qa.QueryTimer()
+        qa.log_query("q1", "admin", None, path="llm", success=True, timer=timer)
+        qa.log_query("q2", "donor", 1, path="llm", success=True, timer=timer)
+        qa.log_query("q3", "donor", 2, path="llm", success=True, timer=timer)
+
+        by_role = {row["role"]: row["count"] for row in qa.get_summary()["by_role"]}
+        assert by_role == {"admin": 1, "donor": 2}

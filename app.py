@@ -10,11 +10,16 @@ register every blueprint.
 
 import os
 import secrets
+import logging
 
 from flask import Flask
 
 import auth
+from logging_config import configure_logging
 from routes import register_blueprints
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -28,9 +33,11 @@ app = Flask(__name__)
 _secret = os.getenv("SECRET_KEY")
 if not _secret:
     _secret = secrets.token_hex(32)
-    print("WARNING: SECRET_KEY not set in environment. Using a random key "
-          "for this run only -- all sessions will be invalidated on restart. "
-          "Set SECRET_KEY in your .env for production use.")
+    logger.warning(
+        "SECRET_KEY not set in environment -- using a random key for this run only "
+        "(all sessions will be invalidated on restart). Set SECRET_KEY in your .env "
+        "for production use."
+    )
 app.secret_key = _secret
 
 # Idempotent: only creates the seeded accounts if users.db is empty, so

@@ -46,7 +46,17 @@ def isolate_sqlite_stores(tmp_path, monkeypatch):
     monkeypatch.setattr(query_analytics, "ANALYTICS_DB_PATH", str(tmp_path / "query_analytics.db"))
     monkeypatch.setattr(staging_queue, "STAGING_DB_PATH", str(tmp_path / "staging_queue.db"))
     monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    monkeypatch.setattr(catalog_manager, "CATALOG_PATH", str(tmp_path / "catalog.yaml"))
+    monkeypatch.setattr(catalog_manager, "CATALOG_DB_PATH", str(tmp_path / "catalog.db"))
+    # Must ALSO redirect _LEGACY_YAML_PATH, not just CATALOG_DB_PATH: the
+    # real project's catalog.yaml still exists on disk, and the one-time
+    # migration in catalog_manager._get_connection() checks that path
+    # directly -- without this, every test's freshly-isolated (and
+    # otherwise empty) catalog.db would silently get seeded with the
+    # real checkout's actual promoted queries on first use. Pointed at a
+    # path that doesn't exist so the migration is always a no-op here;
+    # tests that specifically want to exercise the migration itself
+    # override this themselves (see test_catalog_manager.py).
+    monkeypatch.setattr(catalog_manager, "_LEGACY_YAML_PATH", str(tmp_path / "no-legacy-catalog.yaml"))
 
 
 @pytest.fixture(autouse=True)

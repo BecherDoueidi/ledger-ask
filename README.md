@@ -82,7 +82,7 @@ Ledger·Ask accepts a natural-language question from an authenticated user, reso
 
 ## Architecture & Tech Stack
 
-- **Backend**: Python 3, Flask (`app.py`) — single-process monolith, no separate API/frontend split.
+- **Backend**: Python 3, Flask. `app.py` is a thin application factory (creates the app, seeds default accounts, registers blueprints) — HTTP routing lives in `routes/` (Blueprints grouped by concern: `auth_routes`, `pages`, `admin_api`, `analytics_api`, `query_api`), the `/api/generate-sql` business logic lives in `query_service.py` (plain functions, no Flask dependency), and `llm_client.py` / `prompt_builder.py` / `sql_safety.py` / `auth_decorators.py` hold the supporting concerns each used to have mixed into one file.
 - **Database (business data)**: MySQL by default, accessed via SQLAlchemy + `pymysql` (`db_config.py`). Connection string built from `.env` (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`); `pool_pre_ping=True` to survive MySQL's idle-connection drops. Any other SQLAlchemy-supported dialect (Postgres, SQL Server, SQLite, ...) works by setting `DATABASE_URL` instead — see `db_config.py`'s docstring.
 - **LLM inference**: local Ollama instance, model `qwen2.5-coder:14b`, accessed via the OpenAI-compatible client (`openai` package). Embeddings for semantic caching via Ollama's `nomic-embed-text` model.
 - **Application-state storage**: SQLite, one file per concern (not the business data) — `query_cache.db`, `conversation_state.db`, `query_analytics.db`, `staging_queue.db`, `users.db`. Kept separate from the MySQL business DB by design.

@@ -17,6 +17,7 @@ import json
 
 from sqlalchemy import text as sql_text
 
+import query_service
 from conftest import login
 
 
@@ -368,7 +369,7 @@ class TestDatabaseSchemaChange:
 
         # Simulate the database changing shape underneath the app --
         # e.g. a migration ran, or the whole database was swapped.
-        with app_module.engine.begin() as connection:
+        with query_service.engine.begin() as connection:
             connection.execute(sql_text("ALTER TABLE Donors ADD COLUMN LoyaltyTier TEXT"))
 
         fake_llm.returns("SELECT COUNT(*) FROM Donors")
@@ -384,7 +385,7 @@ class TestDatabaseSchemaChange:
         # A donor asking about their contributions must still be able to
         # reach it -- roles_config.py was never told this table's new
         # name, it has to be discovered live.
-        with app_module.engine.begin() as connection:
+        with query_service.engine.begin() as connection:
             connection.execute(sql_text("ALTER TABLE Donations RENAME TO Contributions"))
 
         login(client, "donor1", "donor123")

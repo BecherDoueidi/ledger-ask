@@ -19,7 +19,8 @@ def test_business_engine_has_seed_data(business_engine):
 
 
 def test_fake_llm_intercepts_call(app_module, fake_llm):
+    import query_service
     fake_llm.returns("SELECT 1")
-    result = app_module.call_llm_api("sys", "user query")
+    result = query_service.call_llm_api("sys", "user query")
     assert result == "SELECT 1"
     assert fake_llm.calls == [("sys", "user query", 0.0)]

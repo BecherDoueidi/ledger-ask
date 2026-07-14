@@ -114,10 +114,15 @@ def business_engine():
 @pytest.fixture
 def app_module(isolate_sqlite_stores, monkeypatch, business_engine):
     """
-    Imports app.py with its `engine` (and schema_harvester's own copy of
-    the same name -- both took their own `from db_config import engine`
-    binding, so both need redirecting independently) pointed at the temp
-    SQLite business database instead of the real MySQL one.
+    Imports app.py with every module-level `engine` binding pointed at
+    the temp SQLite business database instead of the real MySQL one.
+    app.py itself is a thin factory now (see routes/, query_service.py)
+    -- the actual pipeline lives in query_service.py, and
+    routes/admin_api.py has its own independent `from db_config import
+    engine` binding too (used by donor-account creation's identity-table
+    check) -- each of these took its own copy at import time via `from
+    db_config import engine`, so each needs redirecting independently,
+    same as schema_harvester's copy.
 
     Explicitly depends on isolate_sqlite_stores (rather than trusting
     autouse-fixture ordering) and re-seeds default users on every call:
@@ -131,9 +136,12 @@ def app_module(isolate_sqlite_stores, monkeypatch, business_engine):
     """
     import app as app_module
     import schema_harvester
+    import query_service
+    from routes import admin_api
 
-    monkeypatch.setattr(app_module, "engine", business_engine)
+    monkeypatch.setattr(query_service, "engine", business_engine)
     monkeypatch.setattr(schema_harvester, "engine", business_engine)
+    monkeypatch.setattr(admin_api, "engine", business_engine)
     auth.seed_default_users()
     return app_module
 
@@ -147,6 +155,8 @@ def fake_llm(app_module, monkeypatch):
         fake_llm.returns_sequence(["bad", "good"])  # first call bad, retry good
         fake_llm.calls                              # list of (system_prompt, user_query, temperature)
     """
+    import query_service
+
     class FakeLLM:
         def __init__(self):
             self.calls = []
@@ -167,7 +177,7 @@ def fake_llm(app_module, monkeypatch):
             return self._fixed
 
     fake = FakeLLM()
-    monkeypatch.setattr(app_module, "call_llm_api", fake)
+    monkeypatch.setattr(query_service, "call_llm_api", fake)
     return fake
 
 
